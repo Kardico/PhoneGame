@@ -23,7 +23,7 @@
           "id": "fabricate_chips",
           "name": "Fabricate Chips",
           "inputs": [{ "resource": "raw_materials", "quantity": 1 }],
-          "outputs": [{ "resource": "chips", "quantity": 1 }],
+          "outputs": [{ "resource": "chips", "quantity": 6 }],
           "ticks": 3
         }
       ]
@@ -31,13 +31,13 @@
     "assembler": {
       "name": "Assembler",
       "canHold": ["chips", "smartphones"],
-      "maxConcurrentJobs": 2,
+      "maxConcurrentJobs": 3,
       "processes": [
         {
           "id": "assemble_phone",
           "name": "Assemble Phone",
-          "inputs": [{ "resource": "chips", "quantity": 1 }],
-          "outputs": [{ "resource": "smartphones", "quantity": 1 }],
+          "inputs": [{ "resource": "chips", "quantity": 5 }],
+          "outputs": [{ "resource": "smartphones", "quantity": 12 }],
           "ticks": 4
         }
       ]
