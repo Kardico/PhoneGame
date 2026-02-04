@@ -7,11 +7,18 @@
       "baseDemand": 0
     },
     {
+      "id": "hot_city",
+      "name": "Hot City",
+      "localTransportTicks": 1,
+      "baseDemand": 5
+    },
+    {
       "id": "tech_city",
       "name": "Tech City",
       "localTransportTicks": 1,
       "baseDemand": 0
     },
+
     {
       "id": "market_a",
       "name": "Market A",
@@ -37,7 +44,16 @@
     { "from": "mine_region", "to": "market_a", "ticks": 4 },
     { "from": "market_a", "to": "mine_region", "ticks": 4 },
     { "from": "mine_region", "to": "market_b", "ticks": 5 },
-    { "from": "market_b", "to": "mine_region", "ticks": 5 }
+    { "from": "market_b", "to": "mine_region", "ticks": 5 },
+    { "from": "mine_region", "to": "hot_city", "ticks": 2 },
+    { "from": "hot_city", "to": "mine_region", "ticks": 2 },
+    { "from": "hot_city", "to": "tech_city", "ticks": 1 },
+    { "from": "tech_city", "to": "hot_city", "ticks": 1 },
+    { "from": "hot_city", "to": "market_b", "ticks": 3 },
+    { "from": "market_b", "to": "hot_city", "ticks": 3 },
+    { "from": "market_a", "to": "market_b", "ticks": 2 },
+    { "from": "hot_city", "to": "market_a", "ticks": 2 },
+    { "from": "market_a", "to": "hot_city", "ticks": 2 }
   ],
   "demandCycle": {
     "phases": [

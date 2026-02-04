@@ -20,6 +20,16 @@
         "raw_materials": ["mine-1"]
       }
     },
+	    {
+      "id": "chip-2",
+      "type": "chip_processor",
+      "name": "Hot Chips",
+      "locationId": "hot_city",
+      "inventory": { "raw_materials": 5, "chips": 10 },
+      "suppliers": {
+        "raw_materials": ["mine-1"]
+      }
+    },
     {
       "id": "asm-1",
       "type": "assembler",
