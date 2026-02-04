@@ -1,0 +1,55 @@
+{
+  "name": "Standard Smartphone Supply Chain",
+  "description": "1 mine, 1 chip processor, 1 assembler, 2 competing retailers",
+  "entities": [
+    {
+      "id": "mine-1",
+      "type": "mineral_mine",
+      "name": "Northern Mine",
+      "locationId": "mine_region",
+      "inventory": { "raw_materials": 20 },
+      "suppliers": {}
+    },
+    {
+      "id": "chip-1",
+      "type": "chip_processor",
+      "name": "TechCity Chips",
+      "locationId": "tech_city",
+      "inventory": { "raw_materials": 5, "chips": 10 },
+      "suppliers": {
+        "raw_materials": ["mine-1"]
+      }
+    },
+    {
+      "id": "asm-1",
+      "type": "assembler",
+      "name": "TechCity Assembly",
+      "locationId": "tech_city",
+      "inventory": { "chips": 5, "smartphones": 8 },
+      "suppliers": {
+        "chips": ["chip-1"]
+      }
+    },
+    {
+      "id": "ret-1",
+      "type": "retailer",
+      "name": "PhoneMart A",
+      "locationId": "market_a",
+      "inventory": { "smartphones": 5 },
+      "suppliers": {
+        "smartphones": ["asm-1"]
+      }
+    },
+    {
+      "id": "ret-2",
+      "type": "retailer",
+      "name": "PhoneMart B",
+      "locationId": "market_b",
+      "inventory": { "smartphones": 5 },
+      "suppliers": {
+        "smartphones": ["asm-1"]
+      }
+    }
+  ],
+  "defaultPlayerEntity": "ret-1"
+}

@@ -11,37 +11,48 @@ export interface UseTickEngineResult {
   setPaused: (paused: boolean) => void;
   step: () => void;
   reset: () => void;
-  /** Player order for the next tick (entityId + quantity). Set by UI. */
-  playerOrderForNextTick: PlayerOrder | null;
-  setPlayerOrderForNextTick: (order: PlayerOrder | null) => void;
+  /** Submit a player order for the next tick */
+  submitOrder: (order: PlayerOrder) => void;
+  /** Pending player order (if any) */
+  pendingOrder: PlayerOrder | null;
+  /** Clear the pending order */
+  clearOrder: () => void;
 }
 
 /**
- * Core tick-based simulation hook. When not paused, advances game state
- * every TICK_INTERVAL_MS. Each tick uses playerOrderForNextTick if set.
+ * Core tick-based simulation hook.
+ * When not paused, advances game state every TICK_INTERVAL_MS.
  */
 export function useTickEngine(playerEntityId: string | null): UseTickEngineResult {
   const [gameState, setGameState] = useState<GameState>(() =>
     createInitialState(playerEntityId)
   );
   const [isPaused, setPaused] = useState(true);
-  const [playerOrderForNextTick, setPlayerOrderForNextTick] = useState<PlayerOrder | null>(null);
-  const playerOrderRef = useRef<PlayerOrder | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<PlayerOrder | null>(null);
+  const pendingOrderRef = useRef<PlayerOrder | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep ref in sync so interval callback sees latest order
-  playerOrderRef.current = playerOrderForNextTick;
+  pendingOrderRef.current = pendingOrder;
+
+  const submitOrder = useCallback((order: PlayerOrder) => {
+    setPendingOrder(order);
+  }, []);
+
+  const clearOrder = useCallback(() => {
+    setPendingOrder(null);
+  }, []);
 
   const step = useCallback(() => {
-    const order = playerOrderRef.current;
-    setGameState((prev) => runOneTick(prev, order ?? null));
-    setPlayerOrderForNextTick(null);
+    const order = pendingOrderRef.current;
+    setGameState((prev) => runOneTick(prev, order));
+    setPendingOrder(null);
   }, []);
 
   const reset = useCallback(() => {
     setGameState(createInitialState(playerEntityId));
     setPaused(true);
-    setPlayerOrderForNextTick(null);
+    setPendingOrder(null);
   }, [playerEntityId]);
 
   useEffect(() => {
@@ -53,9 +64,9 @@ export function useTickEngine(playerEntityId: string | null): UseTickEngineResul
       return;
     }
     intervalRef.current = setInterval(() => {
-      const order = playerOrderRef.current;
-      setGameState((prev) => runOneTick(prev, order ?? null));
-      setPlayerOrderForNextTick(null);
+      const order = pendingOrderRef.current;
+      setGameState((prev) => runOneTick(prev, order));
+      setPendingOrder(null);
     }, TICK_INTERVAL_MS);
     return () => {
       if (intervalRef.current) {
@@ -71,7 +82,8 @@ export function useTickEngine(playerEntityId: string | null): UseTickEngineResul
     setPaused,
     step,
     reset,
-    playerOrderForNextTick,
-    setPlayerOrderForNextTick,
+    submitOrder,
+    pendingOrder,
+    clearOrder,
   };
 }

@@ -1,6 +1,6 @@
 # Supply Chain — Smartphone Manufacturing Game
 
-A turn-based supply chain simulation inspired by the **Beer Game**, themed around smartphone manufacturing. The game models a four-stage chain: raw materials → chips → assembly → retail. This document is for developers maintaining and extending the codebase.
+A turn-based supply chain simulation inspired by the **Beer Game**, themed around smartphone manufacturing. The game uses a config-driven architecture where entity types, processes, locations, and scenarios are all defined in JSON files.
 
 ---
 
@@ -8,12 +8,13 @@ A turn-based supply chain simulation inspired by the **Beer Game**, themed aroun
 
 1. [Core Concepts](#core-concepts)
 2. [Architecture Overview](#architecture-overview)
-3. [Data Model](#data-model)
-4. [Tick Engine](#tick-engine)
-5. [Entity & Task Rules](#entity--task-rules)
-6. [Player vs AI](#player-vs-ai)
-7. [Project Structure](#project-structure)
-8. [Scaling Notes](#scaling-notes)
+3. [Configuration Files](#configuration-files)
+4. [Data Model](#data-model)
+5. [Tick Engine](#tick-engine)
+6. [Demand System](#demand-system)
+7. [Player vs AI](#player-vs-ai)
+8. [Project Structure](#project-structure)
+9. [Extending the Game](#extending-the-game)
 
 ---
 
@@ -21,112 +22,275 @@ A turn-based supply chain simulation inspired by the **Beer Game**, themed aroun
 
 ### Ticks
 
-- **Tick** = one unit of simulated time (e.g. one day).
+- **Tick** = one unit of simulated time (e.g., one day).
 - The simulation advances tick-by-tick. Each tick:
-  1. The tick counter increments.
-  2. All active **tasks** are updated: any task with `ticksRemaining === 0` is **completed** (inventory changes applied).
-  3. **Entity decisions** run: each entity may start new production or place orders (player choice or AI logic).
+  1. Increment the tick counter.
+  2. Advance demand phase (if applicable).
+  3. Complete finished **jobs** (production) and **transport jobs**.
+  4. Process **selling** at retailers (automatic, instant).
+  5. Process entity decisions (player orders + AI logic).
 
-### Task-Based Delays
+### Jobs (not Tasks)
 
-Nothing is instant:
+- **Process** = A definition of what an entity CAN do (in config).
+- **Job** = A running instance of a process. Has `processId`, `entityId`, `ticksRemaining`, `outputs`.
 
-- **Production**: an entity starts a *production task* that runs for X ticks; when it finishes, output is added to that entity’s inventory.
-- **Transport**: an order creates a *transport task* that runs for Y ticks; when it finishes, the requested resource is added to the *destination* entity’s inventory (and was already deducted from the *source* when the task started).
+### Transport Jobs
 
-This creates lead times and is the core of the Beer Game–style dynamics.
+- When an entity orders resources, a **TransportJob** is created.
+- Transport time = `source.localTransportTicks + route.ticks + destination.localTransportTicks`.
+- Resources are deducted from the supplier immediately; added to buyer when transport completes.
 
-### Pause & Play
+### Locations
 
-- The simulation can be **paused** or **running**. When running, ticks advance on a timer.
-- When paused, the player can **Step** to advance exactly one tick (and set their order for that tick).
-- **Reset** restores the initial state (and returns to entity selection if applicable).
+- Entities exist within **locations** (cities/regions).
+- Each location has:
+  - `localTransportTicks`: Time for internal logistics.
+  - `baseDemand`: Consumer demand for smartphones (retailers only).
+- Routes connect locations with travel times.
 
 ---
 
 ## Architecture Overview
 
-- **State**: A single **game state** object holds the current tick, all entities, and all active tasks. It is the only source of truth for the simulation.
-- **Engine**: Pure functions take the current state (and optional player input) and return the next state. No side effects inside the engine.
-- **UI**: React components read state from the **useTickEngine** hook, render it, and send player actions (e.g. order quantity) back into the hook. The hook runs the engine on a timer when not paused, or on manual Step.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      CONFIG (JSON)                          │
+│  resources.json │ entity-types.json │ locations.json │ scenario.json │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    CONFIG LOADER                            │
+│  Loads, validates, provides GameConfig singleton            │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                     TICK PROCESSOR                          │
+│  Pure functions: runOneTick(state, playerOrder?) → newState │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    useTickEngine HOOK                       │
+│  React state, timer, player orders                          │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                         UI                                  │
+│  RoleSelect → DebugPanel (entities, jobs, controls)         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Configuration Files
+
+All in `src/config/`:
+
+### `resources.json`
+
+Defines available resource types.
+
+```json
+{
+  "resources": [
+    { "id": "raw_materials", "name": "Raw Materials", "icon": "🪨" },
+    { "id": "chips", "name": "Chips", "icon": "🔲" },
+    { "id": "smartphones", "name": "Smartphones", "icon": "📱" }
+  ]
+}
+```
+
+### `entity-types.json`
+
+Defines entity types and their processes.
+
+```json
+{
+  "entityTypes": {
+    "mineral_mine": {
+      "name": "Mineral Mine",
+      "canHold": ["raw_materials"],
+      "maxConcurrentJobs": 1,
+      "processes": [
+        {
+          "id": "extract_minerals",
+          "name": "Extract Minerals",
+          "inputs": [],
+          "outputs": [{ "resource": "raw_materials", "quantity": 2 }],
+          "ticks": 1
+        }
+      ]
+    },
+    "chip_processor": { ... },
+    "assembler": { ... },
+    "retailer": { ... }
+  }
+}
+```
+
+Key fields:
+- `canHold`: Which resources this entity can store.
+- `maxConcurrentJobs`: How many jobs can run simultaneously.
+- `processes`: Array of process definitions (id, inputs, outputs, ticks).
+
+### `locations.json`
+
+Defines locations, routes, and demand cycle.
+
+```json
+{
+  "locations": [
+    { "id": "mine_region", "name": "Mine Region", "localTransportTicks": 1, "baseDemand": 0 },
+    { "id": "tech_city", "name": "Tech City", "localTransportTicks": 1, "baseDemand": 0 },
+    { "id": "market_a", "name": "Market A", "localTransportTicks": 1, "baseDemand": 8 },
+    { "id": "market_b", "name": "Market B", "localTransportTicks": 1, "baseDemand": 6 }
+  ],
+  "routes": [
+    { "from": "mine_region", "to": "tech_city", "ticks": 2 },
+    { "from": "tech_city", "to": "market_a", "ticks": 2 },
+    ...
+  ],
+  "demandCycle": {
+    "phases": [
+      { "name": "Normal", "ticks": 15, "multiplier": 1.0 },
+      { "name": "Growth", "ticks": 10, "multiplier": 1.3 },
+      { "name": "Peak", "ticks": 5, "multiplier": 1.8 },
+      { "name": "Decline", "ticks": 10, "multiplier": 0.7 }
+    ],
+    "variance": 0.15
+  }
+}
+```
+
+### `scenario.json`
+
+Defines initial game state (which entities exist, where, starting inventory).
+
+```json
+{
+  "name": "Standard Smartphone Supply Chain",
+  "description": "1 mine, 1 chip processor, 1 assembler, 2 competing retailers",
+  "entities": [
+    { "id": "mine-1", "type": "mineral_mine", "name": "Northern Mine", "locationId": "mine_region", "inventory": { "raw_materials": 20 } },
+    { "id": "chip-1", "type": "chip_processor", "name": "TechCity Chips", "locationId": "tech_city", "inventory": { "raw_materials": 5, "chips": 10 } },
+    { "id": "asm-1", "type": "assembler", "name": "TechCity Assembly", "locationId": "tech_city", "inventory": { "chips": 5, "smartphones": 8 } },
+    { "id": "ret-1", "type": "retailer", "name": "PhoneMart A", "locationId": "market_a", "inventory": { "smartphones": 5 } },
+    { "id": "ret-2", "type": "retailer", "name": "PhoneMart B", "locationId": "market_b", "inventory": { "smartphones": 5 } }
+  ],
+  "defaultPlayerEntity": "ret-1"
+}
+```
 
 ---
 
 ## Data Model
 
-Defined in `src/types/game.ts`. Key types:
+### Config Types (from JSON)
 
 | Type | Purpose |
-|------|--------|
-| **ResourceKind** | `'raw_materials' \| 'chips' \| 'smartphones'` — what flows through the chain. |
-| **EntityKind** | `'mineral_mine' \| 'chip_processor' \| 'assembler' \| 'retailer'` — the four stages. |
-| **Entity** | `id`, `kind`, `name`, `inventory` (per resource), `isPlayerControlled`. |
-| **ProductionTask** | `type: 'production'`, `entityId`, `ticksRemaining`, `outputResource`, `quantity`. Completes at that entity. |
-| **TransportTask** | `type: 'transport'`, `fromEntityId`, `toEntityId`, `resource`, `quantity`, `ticksRemaining`. Completes at destination. |
-| **Task** | Union of production and transport. |
-| **PlayerOrder** | `entityId`, `quantity` — player action for the next tick (mine: produce qty; others: order qty from upstream). |
-| **GameState** | `tick`, `entities[]`, `tasks[]`. |
+|------|---------|
+| `ResourceConfig` | Resource definition (id, name, icon) |
+| `Process` | Process definition (id, inputs, outputs, ticks) |
+| `EntityTypeConfig` | Entity type (name, canHold, maxConcurrentJobs, processes) |
+| `LocationConfig` | Location (id, name, localTransportTicks, baseDemand) |
+| `RouteConfig` | Route between locations (from, to, ticks) |
+| `DemandPhase` | Phase in demand cycle (name, ticks, multiplier) |
+| `ScenarioConfig` | Initial game setup (entities, defaultPlayerEntity) |
+| `GameConfig` | All config combined |
 
-- **Inventory** is `Partial<Record<ResourceKind, number>>`. Not every entity holds every resource (e.g. mine only has `raw_materials`).
-- Entity IDs are fixed constants (e.g. `entity-mine`, `entity-chip`) so the engine can reference upstream/downstream without string literals scattered in the UI.
+### Runtime Types (game state)
+
+| Type | Purpose |
+|------|---------|
+| `Entity` | Runtime entity (id, type, name, locationId, inventory, isPlayerControlled) |
+| `Job` | Running production job (id, processId, entityId, outputs, ticksRemaining) |
+| `TransportJob` | In-transit shipment (id, from, to, resource, quantity, ticksRemaining) |
+| `PlayerOrder` | Player's action for next tick (entityId, action, targetId, quantity) |
+| `GameState` | Full state (tick, entities, jobs, transportJobs, demandPhase, sales) |
 
 ---
 
 ## Tick Engine
 
-- **Entry point**: `runOneTick(state, playerOrder?)` in `src/engine/tickProcessor.ts`.
-- **Steps inside one tick** (in order):
-  1. **Increment** `state.tick`.
-  2. **Process completed tasks**: for each task, decrement `ticksRemaining`; if it reaches 0, apply the effect (add output to the right entity) and remove the task from the list.
-  3. **Process entity decisions**: for each entity, if player-controlled and `playerOrder` is provided for this tick, apply that order (production or transport); otherwise, if AI, run the standard “order when low / produce when input available” logic. New tasks are appended to the task list.
+### Tick Flow
 
-- **Durations** (in `tickProcessor.ts`):
-  - Production: **raw_materials** 1 tick, **chips** 3 ticks, **smartphones** 4 ticks.
-  - Transport: 2 ticks for all shipments.
+```
+1. Increment tick counter
+2. Advance demand phase (cycle through Normal → Growth → Peak → Decline)
+3. Complete finished jobs → add outputs to entity inventory
+4. Complete finished transports → add resources to destination
+5. Sell at retailers → min(stock, demand), update sales stats
+6. Apply player order (if any)
+7. Run AI decisions for non-player entities
+```
 
-- **Player order**: `runOneTick(state, playerOrder?)` accepts an optional **PlayerOrder** (`entityId`, `quantity`). If present, the player-controlled entity performs that action this tick (mine: produce N raw_materials, or 0 to skip; others: order N from upstream, capped by upstream stock). The UI sets this before Step or each auto-tick when playing.
+### Transport Time Calculation
 
-- **useTickEngine** (`src/hooks/useTickEngine.ts`):
-  - Holds `gameState` and `isPaused`.
-  - When not paused, runs `runOneTick` on an interval (e.g. 800 ms).
-  - Exposes `step()` (one tick with optional player order), `reset()`, and `setPaused()`.
-  - Can be initialised with a **player entity id** so the initial state is created with that entity marked as player-controlled.
+```
+totalTime = source.localTransportTicks + route.ticks + destination.localTransportTicks
+```
+
+For same-location transport (e.g., chip processor → assembler in Tech City):
+```
+totalTime = location.localTransportTicks (just once, no route)
+```
+
+### Supplier Selection
+
+When ordering, the engine finds suppliers dynamically:
+1. Find all entities with the needed resource in stock.
+2. Sort by transport time (closest first), then by available stock.
+3. Pick the first one (first-come-first-served for contention).
 
 ---
 
-## Entity & Task Rules
+## Demand System
 
-### Chain Order (upstream → downstream)
+### Phases
 
-1. **Mineral Mine** — produces **raw_materials** (no input). No upstream.
-2. **Chip Processor** — consumes **raw_materials**, produces **chips**. Upstream: Mine.
-3. **Assembler** — consumes **chips**, produces **smartphones**. Upstream: Chip Processor.
-4. **Retailer** — only holds **smartphones** (sells to end customer). Upstream: Assembler. No production.
+The game cycles through demand phases defined in `demandCycle`:
+- **Normal** (15 ticks): ×1.0 multiplier
+- **Growth** (10 ticks): ×1.3 multiplier
+- **Peak** (5 ticks): ×1.8 multiplier
+- **Decline** (10 ticks): ×0.7 multiplier
 
-### Who can do what
+### Calculation per Tick
 
-- **Mine**: Start a *production* task (raw_materials). Duration 1 tick. Player can choose to produce or not (and how much, if extended).
-- **Chip / Assembler**: Consume input from inventory and start a *production* task; and place *orders* (transport tasks) with upstream when they want more input. Player chooses order quantity per turn.
-- **Retailer**: Only places orders with the Assembler. Player chooses order quantity per turn.
+```
+actualDemand = floor(baseDemand × phaseMultiplier × (1 + random(-variance, +variance)))
+```
 
-### Task ownership for display
+With `variance: 0.15`, demand varies ±15% around the phase-adjusted base.
 
-- **Production task** “belongs” to the entity where production runs (`entityId`).
-- **Transport task** “belongs” to both **from** and **to** entities (outgoing shipment for source, incoming for destination). The UI shows under each entity card: productions at that entity, and incoming/outgoing shipments for that entity.
+### Selling
+
+Each tick, retailers automatically sell:
+```
+sold = min(inventory.smartphones, actualDemand)
+lostSales = max(0, actualDemand - inventory.smartphones)
+```
+
+Sales stats are tracked per retailer for scoring.
 
 ---
 
 ## Player vs AI
 
-- Exactly one entity is **player-controlled** per game (chosen at start).
-- **At start**: The **RoleSelect** screen lets the player choose which entity to control; `createInitialState(controlledEntityId)` is then used so that entity has `isPlayerControlled === true`. A “Change role” control returns to RoleSelect.
-- **Each tick**:
-  - **Player entity**: Does not run AI. The player sets the action for the next tick in the UI:
-    - **Mine**: “Produce (0 = skip)”: 0 to do nothing, or 1–10 to start a production task for that many raw_materials (completes in 1 tick).
-    - **Chip / Assembler / Retailer**: “Order from upstream”: 0 for no order, or up to the upstream entity’s available stock. Creates a transport task (2 ticks) when the tick runs.
-  - **Other entities**: Run AI logic (order when stock below threshold, produce when input available; mine auto-produces when not already producing).
+### Player
 
-Player order is passed into `runOneTick` as an optional **PlayerOrder** (`entityId`, `quantity`) so the engine stays pure and testable.
+- Chooses one entity to control at game start.
+- Each tick can:
+  - **Produce**: Start a job (if entity has processes and capacity).
+  - **Order**: Request resources from suppliers.
+- Orders are applied at the start of the next tick.
+
+### AI
+
+For non-player entities:
+- **Production**: Start jobs when inputs are available and under capacity.
+- **Mine special case**: Produces continuously unless stock > 30.
+- **Ordering**: Order resources when stock falls below threshold (5).
+- **Supplier choice**: Pick closest supplier with available stock.
 
 ---
 
@@ -134,37 +298,67 @@ Player order is passed into `runOneTick` as an optional **PlayerOrder** (`entity
 
 ```
 src/
+├── config/                      # JSON configuration files
+│   ├── resources.json
+│   ├── entity-types.json
+│   ├── locations.json
+│   └── scenario.json
 ├── types/
-│   └── game.ts          # ResourceKind, EntityKind, Entity, Task, GameState
+│   └── game.ts                  # All TypeScript types
 ├── engine/
-│   ├── createInitialState.ts   # Build initial game state (optionally with player entity)
-│   └── tickProcessor.ts        # processCompletedTasks, processEntityDecisions, runOneTick
+│   ├── configLoader.ts          # Load and validate config
+│   ├── createInitialState.ts    # Build initial GameState
+│   └── tickProcessor.ts         # Core tick logic
 ├── hooks/
-│   └── useTickEngine.ts        # State, pause/play, step, reset, player order
+│   └── useTickEngine.ts         # React hook for game state
 ├── components/
-│   ├── DebugPanel.tsx          # Main game UI: tick, play/pause/step, entity cards (inventory + tasks per entity, player order input)
-│   └── RoleSelect.tsx          # Start screen: choose which entity to control
+│   ├── RoleSelect.tsx           # Entity selection screen
+│   └── DebugPanel.tsx           # Main game UI
 ├── App.tsx
 ├── main.tsx
 └── index.css
 ```
 
-- **types**: Single place for all game types and constants (e.g. labels).
-- **engine**: Pure logic; no React, no DOM.
-- **hooks**: Connects engine to React (state, timer, player input).
-- **components**: Screens and per-entity display (inventory, tasks, order controls).
+---
+
+## Extending the Game
+
+### Adding a New Resource
+
+1. Add to `resources.json`.
+2. Update entity types that use it (canHold, process inputs/outputs).
+3. Config loader validates automatically.
+
+### Adding a New Entity Type
+
+1. Add to `entity-types.json` with processes.
+2. Add entities of this type to `scenario.json`.
+3. UI auto-discovers from config.
+
+### Adding a New Location
+
+1. Add to `locations.json`.
+2. Add routes to/from other locations.
+3. Optionally place entities there in scenario.
+
+### Adding a New Process to an Entity Type
+
+1. Add to the `processes` array in `entity-types.json`.
+2. Currently AI uses only the first process; extend `processAIDecisions` for multi-process logic.
+
+### Changing Durations
+
+- **Production**: Edit `ticks` in process definition.
+- **Transport**: Edit `localTransportTicks` in locations and `ticks` in routes.
+
+### Future Extensions (noted in design)
+
+- **Money system**: Add currency, pricing, budgets.
+- **Supplier discovery**: Entities must "find" suppliers before ordering.
+- **Multiple player entities**: Control several entities at once.
+- **AI prioritization**: Factor in cost, reliability, relationships.
+- **Contracts**: Lock in suppliers at fixed rates.
 
 ---
 
-## Scaling Notes
-
-- **Adding entities**: Extend `EntityKind`, add an id in `createInitialState`, and update `UPSTREAM` / `INPUT_FOR_OUTPUT` / `OUTPUT_RESOURCE` in `tickProcessor.ts`. Add a role button in `RoleSelect` and ensure the UI shows the new entity and its tasks.
-- **Adding resources**: Extend `ResourceKind`, update labels and any entity inventory types. Adjust production/transport rules in the engine and UI.
-- **Changing durations**: Edit `PRODUCTION_DURATION_TICKS` and `TRANSPORT_DURATION_TICKS` in `tickProcessor.ts`.
-- **AI tuning**: Change `REORDER_THRESHOLD` and order/production quantities in `processEntityDecisions`. Consider making them configurable (e.g. difficulty).
-- **Multiple players**: Would require `GameState` to support more than one `isPlayerControlled` entity and a `playerOrders` structure keyed by entity id; `runOneTick` would accept a map of orders per player entity.
-- **Persistence**: Serialise `GameState` (and optionally which entity is player) to JSON; restore in `createInitialState` or a dedicated `loadState` function.
-
----
-
-*Last updated for the version that includes: entity selection at start, per-entity task display, mine 1-tick production, and player order quantity per turn.*
+*Current scenario: 1 mine, 1 chip processor, 1 assembler, 2 retailers across 4 locations.*

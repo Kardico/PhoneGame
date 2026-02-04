@@ -1,0 +1,19 @@
+{
+  "resources": [
+    {
+      "id": "raw_materials",
+      "name": "Raw Materials",
+      "icon": "🪨"
+    },
+    {
+      "id": "chips",
+      "name": "Chips",
+      "icon": "🔲"
+    },
+    {
+      "id": "smartphones",
+      "name": "Smartphones",
+      "icon": "📱"
+    }
+  ]
+}

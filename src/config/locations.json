@@ -1,0 +1,51 @@
+{
+  "locations": [
+    {
+      "id": "mine_region",
+      "name": "Mine Region",
+      "localTransportTicks": 1,
+      "baseDemand": 0
+    },
+    {
+      "id": "tech_city",
+      "name": "Tech City",
+      "localTransportTicks": 1,
+      "baseDemand": 0
+    },
+    {
+      "id": "market_a",
+      "name": "Market A",
+      "localTransportTicks": 1,
+      "baseDemand": 8
+    },
+    {
+      "id": "market_b",
+      "name": "Market B",
+      "localTransportTicks": 1,
+      "baseDemand": 6
+    }
+  ],
+  "routes": [
+    { "from": "mine_region", "to": "tech_city", "ticks": 2 },
+    { "from": "tech_city", "to": "mine_region", "ticks": 2 },
+    { "from": "tech_city", "to": "market_a", "ticks": 2 },
+    { "from": "market_a", "to": "tech_city", "ticks": 2 },
+    { "from": "tech_city", "to": "market_b", "ticks": 3 },
+    { "from": "market_b", "to": "tech_city", "ticks": 3 },
+    { "from": "market_a", "to": "market_b", "ticks": 2 },
+    { "from": "market_b", "to": "market_a", "ticks": 2 },
+    { "from": "mine_region", "to": "market_a", "ticks": 4 },
+    { "from": "market_a", "to": "mine_region", "ticks": 4 },
+    { "from": "mine_region", "to": "market_b", "ticks": 5 },
+    { "from": "market_b", "to": "mine_region", "ticks": 5 }
+  ],
+  "demandCycle": {
+    "phases": [
+      { "name": "Normal", "ticks": 15, "multiplier": 1.0 },
+      { "name": "Growth", "ticks": 10, "multiplier": 1.3 },
+      { "name": "Peak", "ticks": 5, "multiplier": 1.8 },
+      { "name": "Decline", "ticks": 10, "multiplier": 0.7 }
+    ],
+    "variance": 0.15
+  }
+}

@@ -1,48 +1,36 @@
+/**
+ * Core tick processor for the supply chain simulation.
+ * 
+ * Each tick:
+ * 1. Increment tick counter
+ * 2. Advance demand phase (if needed)
+ * 3. Complete finished jobs (production)
+ * 4. Complete finished deliveries
+ * 5. Sell (retailers) - automatic, instant
+ * 6. Entity decisions (AI or player order)
+ */
+
 import type {
   Entity,
   GameState,
-  ProductionTask,
-  TransportTask,
-  Task,
-  ResourceKind,
-  EntityKind,
+  Job,
+  Delivery,
+  Order,
   PlayerOrder,
+  GameConfig,
+  DemandPhaseState,
 } from '../types/game';
+import { getGameConfig, getTransportTime, getEntityType, getProcess, getLocation } from './configLoader';
 
-const PRODUCTION_DURATION_TICKS: Record<ResourceKind, number> = {
-  raw_materials: 1,
-  chips: 3,
-  smartphones: 4,
-};
+// ============================================================================
+// HELPERS
+// ============================================================================
 
-const TRANSPORT_DURATION_TICKS = 2;
-
-/** Reorder threshold: AI orders when stock below this. */
-const REORDER_THRESHOLD = 5;
-
-/** Upstream entity id for each entity (who they order from). */
-const UPSTREAM: Record<EntityKind, string | null> = {
-  mineral_mine: null,
-  chip_processor: 'entity-mine',
-  assembler: 'entity-chip',
-  retailer: 'entity-assembler',
-};
-
-/** Input resource consumed to produce output (for producers). */
-const INPUT_FOR_OUTPUT: Record<EntityKind, { input: ResourceKind; output: ResourceKind } | null> = {
-  mineral_mine: null, // produces from nothing
-  chip_processor: { input: 'raw_materials', output: 'chips' },
-  assembler: { input: 'chips', output: 'smartphones' },
-  retailer: null, // no production
-};
-
-/** Output resource produced by each producer. */
-const OUTPUT_RESOURCE: Record<EntityKind, ResourceKind | null> = {
-  mineral_mine: 'raw_materials',
-  chip_processor: 'chips',
-  assembler: 'smartphones',
-  retailer: null,
-};
+let idCounter = 0;
+function nextId(prefix: string): string {
+  idCounter += 1;
+  return `${prefix}-${idCounter}`;
+}
 
 function getEntity(state: GameState, id: string): Entity | undefined {
   return state.entities.find((e) => e.id === id);
@@ -55,7 +43,7 @@ function updateEntity(state: GameState, id: string, updater: (e: Entity) => Enti
   };
 }
 
-function addToInventory(state: GameState, entityId: string, resource: ResourceKind, quantity: number): GameState {
+function addToInventory(state: GameState, entityId: string, resource: string, quantity: number): GameState {
   const entity = getEntity(state, entityId);
   if (!entity) return state;
   const current = entity.inventory[resource] ?? 0;
@@ -65,7 +53,7 @@ function addToInventory(state: GameState, entityId: string, resource: ResourceKi
   }));
 }
 
-function consumeFromInventory(state: GameState, entityId: string, resource: ResourceKind, quantity: number): GameState | null {
+function removeFromInventory(state: GameState, entityId: string, resource: string, quantity: number): GameState | null {
   const entity = getEntity(state, entityId);
   if (!entity) return null;
   const current = entity.inventory[resource] ?? 0;
@@ -76,165 +64,556 @@ function consumeFromInventory(state: GameState, entityId: string, resource: Reso
   }));
 }
 
-/** Complete all tasks with ticksRemaining 0 and return updated state. */
-export function processCompletedTasks(state: GameState): GameState {
-  const stillActive: Task[] = [];
+// ============================================================================
+// DEMAND PHASE
+// ============================================================================
+
+function advanceDemandPhase(state: GameState, config: GameConfig): GameState {
+  const cycle = config.demandCycle;
+  const currentPhase = cycle.phases[state.demandPhase.phaseIndex];
+  
+  let newPhaseState: DemandPhaseState = {
+    phaseIndex: state.demandPhase.phaseIndex,
+    ticksInPhase: state.demandPhase.ticksInPhase + 1,
+  };
+
+  // Check if we need to move to next phase
+  if (newPhaseState.ticksInPhase >= currentPhase.ticks) {
+    newPhaseState = {
+      phaseIndex: (state.demandPhase.phaseIndex + 1) % cycle.phases.length,
+      ticksInPhase: 0,
+    };
+  }
+
+  return { ...state, demandPhase: newPhaseState };
+}
+
+function getCurrentDemand(state: GameState, config: GameConfig, locationId: string): number {
+  const location = getLocation(config, locationId);
+  if (location.baseDemand === 0) return 0;
+
+  const cycle = config.demandCycle;
+  const phase = cycle.phases[state.demandPhase.phaseIndex];
+  
+  const baseDemand = location.baseDemand * phase.multiplier;
+  const variance = cycle.variance;
+  const randomFactor = 1 + (Math.random() * 2 - 1) * variance;
+  
+  return Math.max(0, Math.floor(baseDemand * randomFactor));
+}
+
+export function getCurrentPhaseName(state: GameState): string {
+  const config = getGameConfig();
+  return config.demandCycle.phases[state.demandPhase.phaseIndex].name;
+}
+
+export function getPhaseProgress(state: GameState): { current: number; total: number } {
+  const config = getGameConfig();
+  const phase = config.demandCycle.phases[state.demandPhase.phaseIndex];
+  return {
+    current: state.demandPhase.ticksInPhase,
+    total: phase.ticks,
+  };
+}
+
+// ============================================================================
+// JOB COMPLETION
+// ============================================================================
+
+function processCompletedJobs(state: GameState): GameState {
+  let nextState = state;
+  const stillActive: Job[] = [];
+
+  for (const job of state.jobs) {
+    if (job.ticksRemaining <= 0) {
+      // Job completed - add outputs to entity inventory
+      for (const output of job.outputs) {
+        nextState = addToInventory(nextState, job.entityId, output.resource, output.quantity);
+      }
+    } else {
+      // Still running - decrement and keep
+      stillActive.push({ ...job, ticksRemaining: job.ticksRemaining - 1 });
+    }
+  }
+
+  return { ...nextState, jobs: stillActive };
+}
+
+// ============================================================================
+// DELIVERY COMPLETION
+// ============================================================================
+
+function processCompletedDeliveries(state: GameState): GameState {
+  let nextState = state;
+  const stillActive: Delivery[] = [];
+  const updatedOrders = [...nextState.orders];
+
+  for (const delivery of state.deliveries) {
+    if (delivery.ticksRemaining <= 0) {
+      // Delivery completed - add to destination inventory
+      nextState = addToInventory(nextState, delivery.toEntityId, delivery.resource, delivery.quantity);
+      
+      // Update the associated order
+      const orderIndex = updatedOrders.findIndex((o) => o.id === delivery.orderId);
+      if (orderIndex !== -1) {
+        updatedOrders[orderIndex] = {
+          ...updatedOrders[orderIndex],
+          status: 'delivered',
+          deliveredAtTick: nextState.tick,
+        };
+      }
+    } else {
+      // Still in transit - decrement and keep
+      stillActive.push({ ...delivery, ticksRemaining: delivery.ticksRemaining - 1 });
+    }
+  }
+
+  return { ...nextState, deliveries: stillActive, orders: updatedOrders };
+}
+
+// ============================================================================
+// SELLING (RETAILERS)
+// ============================================================================
+
+function processSelling(state: GameState, config: GameConfig): GameState {
   let nextState = state;
 
-  for (const task of state.tasks) {
-    if (task.ticksRemaining > 0) {
-      stillActive.push({ ...task, ticksRemaining: task.ticksRemaining - 1 });
+  for (const entity of nextState.entities) {
+    const entityType = getEntityType(config, entity);
+    
+    // Only retailers sell (entities with no processes that can hold smartphones)
+    if (entityType.processes.length > 0 || !entityType.canHold.includes('smartphones')) {
       continue;
     }
 
-    if (task.type === 'production') {
-      const t = task as ProductionTask;
-      nextState = addToInventory(nextState, t.entityId, t.outputResource, t.quantity);
-    } else {
-      const t = task as TransportTask;
-      nextState = addToInventory(nextState, t.toEntityId, t.resource, t.quantity);
+    const demand = getCurrentDemand(nextState, config, entity.locationId);
+    const stock = entity.inventory['smartphones'] ?? 0;
+    const sold = Math.min(stock, demand);
+    const lostSales = Math.max(0, demand - stock);
+
+    if (sold > 0) {
+      nextState = removeFromInventory(nextState, entity.id, 'smartphones', sold) ?? nextState;
     }
+
+    // Update sales stats
+    const currentStats = nextState.sales[entity.id] ?? { totalSold: 0, totalDemand: 0, lostSales: 0 };
+    nextState = {
+      ...nextState,
+      sales: {
+        ...nextState.sales,
+        [entity.id]: {
+          totalSold: currentStats.totalSold + sold,
+          totalDemand: currentStats.totalDemand + demand,
+          lostSales: currentStats.lostSales + lostSales,
+        },
+      },
+    };
   }
 
-  return { ...nextState, tasks: stillActive };
+  return nextState;
 }
 
-/** Generate a simple unique id for new tasks. */
-let taskIdCounter = 0;
-function nextTaskId(prefix: string): string {
-  taskIdCounter += 1;
-  return `${prefix}-${taskIdCounter}`;
+// ============================================================================
+// SUPPLIER SELECTION
+// ============================================================================
+
+/**
+ * Find the best supplier for a resource from an entity's suppliers list.
+ * Returns the supplier with stock, preferring closer ones.
+ */
+function findBestSupplier(
+  state: GameState,
+  config: GameConfig,
+  buyerEntityId: string,
+  resource: string
+): Entity | null {
+  const buyer = getEntity(state, buyerEntityId);
+  if (!buyer) return null;
+
+  const supplierIds = buyer.suppliers[resource] ?? [];
+  if (supplierIds.length === 0) return null;
+
+  // Get all potential suppliers with their stock and distance
+  const candidates = supplierIds
+    .map((id) => {
+      const supplier = getEntity(state, id);
+      if (!supplier) return null;
+      const stock = supplier.inventory[resource] ?? 0;
+      const distance = getTransportTime(config, supplier.locationId, buyer.locationId);
+      return { supplier, stock, distance };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null && c.stock > 0);
+
+  if (candidates.length === 0) {
+    // No suppliers with stock, return any valid supplier (order will be amended to 0)
+    const firstSupplier = getEntity(state, supplierIds[0]);
+    return firstSupplier ?? null;
+  }
+
+  // Sort by distance (prefer closer), then by stock (prefer more)
+  candidates.sort((a, b) => {
+    if (a.distance !== b.distance) return a.distance - b.distance;
+    return b.stock - a.stock;
+  });
+
+  return candidates[0].supplier;
 }
 
-/** Apply player order for this tick (production or transport), then run AI for others. */
-export function processEntityDecisions(state: GameState, playerOrder: PlayerOrder | null): GameState {
+/**
+ * Get all available suppliers for a resource with their details.
+ */
+export function getSuppliersForResource(
+  state: GameState,
+  config: GameConfig,
+  buyerEntityId: string,
+  resource: string
+): { entityId: string; entityName: string; stock: number; transportTime: number }[] {
+  const buyer = getEntity(state, buyerEntityId);
+  if (!buyer) return [];
+
+  const supplierIds = buyer.suppliers[resource] ?? [];
+  
+  return supplierIds
+    .map((id) => {
+      const supplier = getEntity(state, id);
+      if (!supplier) return null;
+      return {
+        entityId: supplier.id,
+        entityName: supplier.name,
+        stock: supplier.inventory[resource] ?? 0,
+        transportTime: getTransportTime(config, supplier.locationId, buyer.locationId),
+      };
+    })
+    .filter((s): s is NonNullable<typeof s> => s !== null);
+}
+
+// ============================================================================
+// ORDER CREATION
+// ============================================================================
+
+/**
+ * Create an order from buyer to a specific supplier.
+ * If supplierId is not provided, finds the best supplier from the buyer's list.
+ * The supplier immediately fulfills what they can (up to their stock).
+ * If fulfilled > 0, a delivery is created.
+ */
+function createOrder(
+  state: GameState,
+  config: GameConfig,
+  buyerEntityId: string,
+  resource: string,
+  requestedQuantity: number,
+  supplierId?: string
+): GameState {
+  const buyer = getEntity(state, buyerEntityId);
+  if (!buyer) return state;
+
+  // Find the seller - either specified or best available
+  let seller: Entity | null = null;
+  if (supplierId) {
+    // Verify the supplier is in the buyer's suppliers list for this resource
+    const validSuppliers = buyer.suppliers[resource] ?? [];
+    if (validSuppliers.includes(supplierId)) {
+      seller = getEntity(state, supplierId) ?? null;
+    }
+  }
+  
+  if (!seller) {
+    seller = findBestSupplier(state, config, buyerEntityId, resource);
+  }
+
+  if (!seller) return state;
+
+  const sellerStock = seller.inventory[resource] ?? 0;
+  const fulfilledQuantity = Math.min(requestedQuantity, sellerStock);
+  const wasAmended = fulfilledQuantity < requestedQuantity;
+
+  // Create the order record
+  const orderId = nextId('order');
+  const order: Order = {
+    id: orderId,
+    placedAtTick: state.tick,
+    buyerEntityId,
+    sellerEntityId: seller.id,
+    resource,
+    requestedQuantity,
+    fulfilledQuantity,
+    wasAmended,
+    status: fulfilledQuantity > 0 ? 'in_transit' : 'delivered', // 'delivered' with 0 if nothing shipped
+  };
+
+  let nextState: GameState = {
+    ...state,
+    orders: [...state.orders, order],
+  };
+
+  // If any quantity is fulfilled, deduct from seller and create delivery
+  if (fulfilledQuantity > 0) {
+    nextState = removeFromInventory(nextState, seller.id, resource, fulfilledQuantity) ?? nextState;
+
+    const transportTime = getTransportTime(config, seller.locationId, buyer.locationId);
+
+    const delivery: Delivery = {
+      id: nextId('delivery'),
+      orderId,
+      fromEntityId: seller.id,
+      toEntityId: buyerEntityId,
+      resource,
+      quantity: fulfilledQuantity,
+      ticksRemaining: transportTime,
+    };
+
+    nextState = {
+      ...nextState,
+      deliveries: [...nextState.deliveries, delivery],
+    };
+  }
+
+  return nextState;
+}
+
+// ============================================================================
+// AI LOGIC
+// ============================================================================
+
+/** Threshold below which AI orders more resources */
+const AI_REORDER_THRESHOLD = 5;
+/** How much AI tries to order at once */
+const AI_ORDER_QUANTITY = 10;
+/** Threshold above which mine pauses production */
+const MINE_MAX_STOCK = 30;
+
+function processAIDecisions(state: GameState, config: GameConfig): GameState {
   let nextState = state;
-  const newTasks: Task[] = [...nextState.tasks];
-
-  // Apply player order first
-  if (playerOrder && playerOrder.quantity > 0) {
-    const entity = getEntity(nextState, playerOrder.entityId);
-    if (entity?.isPlayerControlled) {
-      const upstreamId = UPSTREAM[entity.kind];
-      const qty = Math.max(0, Math.floor(playerOrder.quantity));
-
-      if (entity.kind === 'mineral_mine') {
-        newTasks.push({
-          type: 'production',
-          id: nextTaskId('production'),
-          entityId: entity.id,
-          ticksRemaining: PRODUCTION_DURATION_TICKS.raw_materials,
-          outputResource: 'raw_materials',
-          quantity: qty,
-        });
-      } else if (upstreamId) {
-        const demandedResource = INPUT_FOR_OUTPUT[entity.kind]?.input ?? (entity.kind === 'retailer' ? 'smartphones' : null);
-        if (demandedResource) {
-          const upstream = getEntity(nextState, upstreamId);
-          const upStock = upstream?.inventory[demandedResource] ?? 0;
-          const orderQty = Math.min(qty, upStock);
-          if (orderQty > 0) {
-            const deductState = consumeFromInventory(nextState, upstreamId, demandedResource, orderQty);
-            if (deductState) {
-              nextState = deductState;
-              newTasks.push({
-                type: 'transport',
-                id: nextTaskId('transport'),
-                fromEntityId: upstreamId,
-                toEntityId: entity.id,
-                resource: demandedResource,
-                quantity: orderQty,
-                ticksRemaining: TRANSPORT_DURATION_TICKS,
-              });
-            }
-          }
-        }
-      }
-    }
-  }
+  const newJobs: Job[] = [...nextState.jobs];
 
   for (const entity of nextState.entities) {
-    const upstreamId = UPSTREAM[entity.kind];
-    const io = INPUT_FOR_OUTPUT[entity.kind];
-    const outputRes = OUTPUT_RESOURCE[entity.kind];
-
-    // Skip player-controlled; already handled above
     if (entity.isPlayerControlled) continue;
 
-    // ---- Order from upstream when stock is low ----
-    if (upstreamId) {
-      const demandedResource = io?.input ?? (entity.kind === 'retailer' ? 'smartphones' : null);
-      if (demandedResource) {
-        const current = entity.inventory[demandedResource] ?? 0;
-        if (current < REORDER_THRESHOLD) {
-          const upstream = getEntity(nextState, upstreamId);
-          const upStock = upstream?.inventory[demandedResource] ?? 0;
-          const orderQty = Math.min(10, upStock, REORDER_THRESHOLD * 2 - current);
-          if (orderQty > 0) {
-            const deductState = consumeFromInventory(nextState, upstreamId, demandedResource, orderQty);
-            if (deductState) {
-              nextState = deductState;
-              newTasks.push({
-                type: 'transport',
-                id: nextTaskId('transport'),
-                fromEntityId: upstreamId,
-                toEntityId: entity.id,
-                resource: demandedResource,
-                quantity: orderQty,
-                ticksRemaining: TRANSPORT_DURATION_TICKS,
-              });
-            }
+    const entityType = getEntityType(config, entity);
+
+    // --- Start production jobs if we have inputs and capacity ---
+    const activeJobsForEntity = newJobs.filter((j) => j.entityId === entity.id).length;
+    const availableCapacity = entityType.maxConcurrentJobs - activeJobsForEntity;
+
+    if (availableCapacity > 0 && entityType.processes.length > 0) {
+      const process = entityType.processes[0]; // For now, just use first process
+
+      // Check if this is a mine (no inputs)
+      if (process.inputs.length === 0) {
+        // Mine logic: produce if stock isn't too high
+        const outputResource = process.outputs[0]?.resource;
+        const currentStock = entity.inventory[outputResource] ?? 0;
+        
+        if (currentStock < MINE_MAX_STOCK && availableCapacity > 0) {
+          newJobs.push({
+            id: nextId('job'),
+            processId: process.id,
+            entityId: entity.id,
+            outputs: [...process.outputs],
+            ticksRemaining: process.ticks,
+          });
+        }
+      } else {
+        // Normal production: check if we have all inputs
+        let canProduce = true;
+        for (const input of process.inputs) {
+          const available = entity.inventory[input.resource] ?? 0;
+          if (available < input.quantity) {
+            canProduce = false;
+            break;
           }
         }
-      }
-    }
 
-    // ---- Start production if entity has input ----
-    if (io && outputRes) {
-      const inputStock = entity.inventory[io.input] ?? 0;
-      const produceQty = 1;
-      if (inputStock >= produceQty) {
-        const afterConsume = consumeFromInventory(nextState, entity.id, io.input, produceQty);
-        if (afterConsume) {
-          nextState = afterConsume;
-          const ticks = PRODUCTION_DURATION_TICKS[outputRes];
-          newTasks.push({
-            type: 'production',
-            id: nextTaskId('production'),
+        if (canProduce) {
+          // Consume inputs
+          for (const input of process.inputs) {
+            const consumed = removeFromInventory(nextState, entity.id, input.resource, input.quantity);
+            if (consumed) {
+              nextState = consumed;
+            }
+          }
+
+          newJobs.push({
+            id: nextId('job'),
+            processId: process.id,
             entityId: entity.id,
-            ticksRemaining: ticks,
-            outputResource: outputRes,
-            quantity: produceQty,
+            outputs: [...process.outputs],
+            ticksRemaining: process.ticks,
           });
         }
       }
     }
 
-    // Mine: produce raw_materials periodically (no input)
-    if (entity.kind === 'mineral_mine') {
-      const alreadyProducing = newTasks.some(
-        (t) => t.type === 'production' && t.entityId === entity.id
-      );
-      if (!alreadyProducing) {
-        newTasks.push({
-          type: 'production',
-          id: nextTaskId('production'),
-          entityId: entity.id,
-          ticksRemaining: PRODUCTION_DURATION_TICKS.raw_materials,
-          outputResource: 'raw_materials',
-          quantity: 2,
-        });
+    // --- Order resources if running low (for each resource we have suppliers for) ---
+    // Collect all needed resources
+    const neededResources: string[] = [];
+    
+    // Check process inputs
+    for (const process of entityType.processes) {
+      for (const input of process.inputs) {
+        if (!neededResources.includes(input.resource)) {
+          neededResources.push(input.resource);
+        }
+      }
+    }
+
+    // Retailers need smartphones
+    if (entityType.processes.length === 0 && entityType.canHold.includes('smartphones')) {
+      if (!neededResources.includes('smartphones')) {
+        neededResources.push('smartphones');
+      }
+    }
+
+    // Check each needed resource and order if low
+    for (const neededResource of neededResources) {
+      const supplierIds = entity.suppliers[neededResource] ?? [];
+      if (supplierIds.length === 0) continue; // No suppliers for this resource
+
+      const currentStock = entity.inventory[neededResource] ?? 0;
+      
+      if (currentStock < AI_REORDER_THRESHOLD) {
+        // Place an order (supplier may not have full stock, that's okay)
+        nextState = createOrder(nextState, config, entity.id, neededResource, AI_ORDER_QUANTITY);
       }
     }
   }
 
-  return { ...nextState, tasks: newTasks };
+  return { ...nextState, jobs: newJobs };
 }
 
-/** Run one full tick: increment tick, process completed tasks, then entity decisions. */
-export function runOneTick(state: GameState, playerOrder: PlayerOrder | null = null): GameState {
-  let next = { ...state, tick: state.tick + 1 };
-  next = processCompletedTasks(next);
-  next = processEntityDecisions(next, playerOrder);
+// ============================================================================
+// PLAYER ORDERS
+// ============================================================================
+
+function processPlayerOrder(state: GameState, config: GameConfig, playerAction: PlayerOrder): GameState {
+  const entity = getEntity(state, playerAction.entityId);
+  if (!entity || !entity.isPlayerControlled) return state;
+
+  let nextState = state;
+  const newJobs: Job[] = [...nextState.jobs];
+
+  if (playerAction.action === 'produce') {
+    // Start a production job
+    const entityType = getEntityType(config, entity);
+    const process = getProcess(entityType, playerAction.targetId);
+
+    // Check capacity
+    const activeJobsForEntity = newJobs.filter((j) => j.entityId === entity.id).length;
+    if (activeJobsForEntity >= entityType.maxConcurrentJobs) {
+      return state; // At capacity
+    }
+
+    // Check inputs (if any)
+    if (process.inputs.length > 0) {
+      for (const input of process.inputs) {
+        const available = entity.inventory[input.resource] ?? 0;
+        if (available < input.quantity * playerAction.quantity) {
+          return state; // Not enough inputs
+        }
+      }
+
+      // Consume inputs
+      for (const input of process.inputs) {
+        const consumed = removeFromInventory(nextState, entity.id, input.resource, input.quantity * playerAction.quantity);
+        if (consumed) {
+          nextState = consumed;
+        }
+      }
+    }
+
+    // Create job(s)
+    for (let i = 0; i < playerAction.quantity; i++) {
+      if (newJobs.filter((j) => j.entityId === entity.id).length >= entityType.maxConcurrentJobs) {
+        break; // Hit capacity
+      }
+      newJobs.push({
+        id: nextId('job'),
+        processId: process.id,
+        entityId: entity.id,
+        outputs: [...process.outputs],
+        ticksRemaining: process.ticks,
+      });
+    }
+    nextState = { ...nextState, jobs: newJobs };
+  } else if (playerAction.action === 'order') {
+    // Place an order - use specified supplier or find best
+    const resource = playerAction.targetId;
+    const supplierIds = entity.suppliers[resource] ?? [];
+    
+    if (supplierIds.length > 0) {
+      nextState = createOrder(
+        nextState,
+        config,
+        entity.id,
+        resource,
+        playerAction.quantity,
+        playerAction.supplierId
+      );
+    }
+  }
+
+  return nextState;
+}
+
+// ============================================================================
+// MAIN TICK PROCESSOR
+// ============================================================================
+
+export function runOneTick(state: GameState, playerAction: PlayerOrder | null = null): GameState {
+  const config = getGameConfig();
+
+  // 1. Increment tick
+  let next: GameState = { ...state, tick: state.tick + 1 };
+
+  // 2. Advance demand phase
+  next = advanceDemandPhase(next, config);
+
+  // 3. Complete finished jobs (production)
+  next = processCompletedJobs(next);
+
+  // 4. Complete finished deliveries
+  next = processCompletedDeliveries(next);
+
+  // 5. Sell (retailers)
+  next = processSelling(next, config);
+
+  // 6a. Process player action if provided
+  if (playerAction) {
+    next = processPlayerOrder(next, config, playerAction);
+  }
+
+  // 6b. Process AI decisions
+  next = processAIDecisions(next, config);
+
   return next;
+}
+
+// ============================================================================
+// UTILITY EXPORTS
+// ============================================================================
+
+export { getGameConfig, getTransportTime, getEntityType, getProcess, getLocation };
+
+/** Get orders for a specific entity (as buyer or seller) */
+export function getOrdersForEntity(state: GameState, entityId: string): Order[] {
+  return state.orders.filter(
+    (o) => o.buyerEntityId === entityId || o.sellerEntityId === entityId
+  );
+}
+
+/** Get active deliveries for a specific entity (incoming or outgoing) */
+export function getDeliveriesForEntity(state: GameState, entityId: string): {
+  incoming: Delivery[];
+  outgoing: Delivery[];
+} {
+  return {
+    incoming: state.deliveries.filter((d) => d.toEntityId === entityId),
+    outgoing: state.deliveries.filter((d) => d.fromEntityId === entityId),
+  };
+}
+
+/** Get entity name by ID */
+export function getEntityName(state: GameState, entityId: string): string {
+  return state.entities.find((e) => e.id === entityId)?.name ?? entityId;
 }

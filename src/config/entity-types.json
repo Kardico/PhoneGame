@@ -1,0 +1,52 @@
+{
+  "entityTypes": {
+    "mineral_mine": {
+      "name": "Mineral Mine",
+      "canHold": ["raw_materials"],
+      "maxConcurrentJobs": 1,
+      "processes": [
+        {
+          "id": "extract_minerals",
+          "name": "Extract Minerals",
+          "inputs": [],
+          "outputs": [{ "resource": "raw_materials", "quantity": 2 }],
+          "ticks": 1
+        }
+      ]
+    },
+    "chip_processor": {
+      "name": "Chip Processor",
+      "canHold": ["raw_materials", "chips"],
+      "maxConcurrentJobs": 3,
+      "processes": [
+        {
+          "id": "fabricate_chips",
+          "name": "Fabricate Chips",
+          "inputs": [{ "resource": "raw_materials", "quantity": 1 }],
+          "outputs": [{ "resource": "chips", "quantity": 1 }],
+          "ticks": 3
+        }
+      ]
+    },
+    "assembler": {
+      "name": "Assembler",
+      "canHold": ["chips", "smartphones"],
+      "maxConcurrentJobs": 2,
+      "processes": [
+        {
+          "id": "assemble_phone",
+          "name": "Assemble Phone",
+          "inputs": [{ "resource": "chips", "quantity": 1 }],
+          "outputs": [{ "resource": "smartphones", "quantity": 1 }],
+          "ticks": 4
+        }
+      ]
+    },
+    "retailer": {
+      "name": "Retailer",
+      "canHold": ["smartphones"],
+      "maxConcurrentJobs": 0,
+      "processes": []
+    }
+  }
+}
