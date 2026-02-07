@@ -18,7 +18,6 @@
       "localTransportTicks": 1,
       "baseDemand": 0
     },
-
     {
       "id": "market_a",
       "name": "Market A",
@@ -32,28 +31,15 @@
       "baseDemand": 6
     }
   ],
-  "routes": [
-    { "from": "mine_region", "to": "tech_city", "ticks": 2 },
-    { "from": "tech_city", "to": "mine_region", "ticks": 2 },
-    { "from": "tech_city", "to": "market_a", "ticks": 2 },
-    { "from": "market_a", "to": "tech_city", "ticks": 2 },
-    { "from": "tech_city", "to": "market_b", "ticks": 3 },
-    { "from": "market_b", "to": "tech_city", "ticks": 3 },
-    { "from": "market_a", "to": "market_b", "ticks": 2 },
-    { "from": "market_b", "to": "market_a", "ticks": 2 },
-    { "from": "mine_region", "to": "market_a", "ticks": 4 },
-    { "from": "market_a", "to": "mine_region", "ticks": 4 },
-    { "from": "mine_region", "to": "market_b", "ticks": 5 },
-    { "from": "market_b", "to": "mine_region", "ticks": 5 },
-    { "from": "mine_region", "to": "hot_city", "ticks": 2 },
-    { "from": "hot_city", "to": "mine_region", "ticks": 2 },
-    { "from": "hot_city", "to": "tech_city", "ticks": 1 },
-    { "from": "tech_city", "to": "hot_city", "ticks": 1 },
-    { "from": "hot_city", "to": "market_b", "ticks": 3 },
-    { "from": "market_b", "to": "hot_city", "ticks": 3 },
-    { "from": "market_a", "to": "market_b", "ticks": 2 },
-    { "from": "hot_city", "to": "market_a", "ticks": 2 },
-    { "from": "market_a", "to": "hot_city", "ticks": 2 }
+  "corridors": [
+    { "locationA": "mine_region", "locationB": "hot_city", "cost": 2, "type": "land" },
+    { "locationA": "mine_region", "locationB": "tech_city", "cost": 2, "type": "land" },
+    { "locationA": "hot_city", "locationB": "tech_city", "cost": 1, "type": "land" },
+    { "locationA": "hot_city", "locationB": "market_a", "cost": 2, "type": "land" },
+    { "locationA": "hot_city", "locationB": "market_b", "cost": 3, "type": "land" },
+    { "locationA": "tech_city", "locationB": "market_a", "cost": 2, "type": "land" },
+    { "locationA": "tech_city", "locationB": "market_b", "cost": 3, "type": "land" },
+    { "locationA": "market_a", "locationB": "market_b", "cost": 2, "type": "land" }
   ],
   "demandCycle": {
     "phases": [

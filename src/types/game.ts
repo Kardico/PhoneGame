@@ -24,16 +24,27 @@ export interface ResourceAmount {
 export interface Process {
   id: string;
   name: string;
-  inputs: ResourceAmount[];
+  /** Inputs consumed at the start of each production cycle */
+  cycleInputs: ResourceAmount[];
+  /** Inputs consumed every tick while the line is running */
+  tickInputs: ResourceAmount[];
   outputs: ResourceAmount[];
-  ticks: number;
+  /** Number of ticks per production cycle (at volume 1) */
+  cycleTicks: number;
+  /** Number of ticks to start up a new line */
+  startupTicks: number;
+  /** Minimum volume (scale factor for inputs/outputs) */
+  minVolume: number;
+  /** Maximum volume (scale factor for inputs/outputs) */
+  maxVolume: number;
 }
 
 /** Entity type definition from entity-types.json */
 export interface EntityTypeConfig {
   name: string;
   canHold: string[];
-  maxConcurrentJobs: number;
+  /** Maximum number of process lines that can run simultaneously */
+  maxProcessLines: number;
   processes: Process[];
 }
 
@@ -45,11 +56,16 @@ export interface LocationConfig {
   baseDemand: number;
 }
 
-/** Route between two locations */
-export interface RouteConfig {
-  from: string;
-  to: string;
-  ticks: number;
+/** Corridor type for transport links */
+export type CorridorType = 'land' | 'maritime' | 'air';
+
+/** Bi-directional corridor between two locations */
+export interface CorridorConfig {
+  locationA: string;
+  locationB: string;
+  /** Cost in ticks to traverse this corridor (excluding local transport) */
+  cost: number;
+  type: CorridorType;
 }
 
 /** Demand phase in the cycle */
@@ -68,7 +84,7 @@ export interface DemandCycleConfig {
 /** Full locations config file structure */
 export interface LocationsConfig {
   locations: LocationConfig[];
-  routes: RouteConfig[];
+  corridors: CorridorConfig[];
   demandCycle: DemandCycleConfig;
 }
 
@@ -96,7 +112,7 @@ export interface GameConfig {
   resources: ResourceConfig[];
   entityTypes: Record<string, EntityTypeConfig>;
   locations: LocationConfig[];
-  routes: RouteConfig[];
+  corridors: CorridorConfig[];
   demandCycle: DemandCycleConfig;
   scenario: ScenarioConfig;
 }
@@ -115,23 +131,33 @@ export interface Entity {
   name: string;
   locationId: string;
   inventory: Inventory;
+  /** Stock reserved for accepted-but-not-yet-shipped orders */
+  committed: Inventory;
   isPlayerControlled: boolean;
   /** Map of resource ID -> list of potential supplier entity IDs */
   suppliers: Record<string, string[]>;
 }
 
-/** A running instance of a process (production job) */
-export interface Job {
+/** Phase of a running process line */
+export type ProcessLinePhase = 'starting' | 'running';
+
+/** A running instance of a process (continuous production line) */
+export interface ProcessLine {
   id: string;
   processId: string;
   entityId: string;
-  /** Cached outputs for when job completes */
-  outputs: ResourceAmount[];
-  ticksRemaining: number;
+  /** Current phase: starting up or actively running */
+  phase: ProcessLinePhase;
+  /** Ticks remaining in startup (only relevant when phase === 'starting') */
+  startupTicksRemaining: number;
+  /** Progress towards cycle completion: 0 to cycleTicks */
+  progress: number;
+  /** Current volume (between minVolume and maxVolume) */
+  volume: number;
 }
 
 /** Order status */
-export type OrderStatus = 'pending' | 'in_transit' | 'delivered';
+export type OrderStatus = 'pending' | 'accepted' | 'in_transit' | 'delivered' | 'declined';
 
 /** An order placed by a buyer to a seller */
 export interface Order {
@@ -147,7 +173,7 @@ export interface Order {
   resource: string;
   /** What the buyer requested */
   requestedQuantity: number;
-  /** What the seller actually shipped (may be less if stock was low) */
+  /** What the seller actually committed to ship (may be less if stock was low) */
   fulfilledQuantity: number;
   /** Whether the order was amended (fulfilled < requested) */
   wasAmended: boolean;
@@ -164,18 +190,23 @@ export interface Delivery {
   resource: string;
   quantity: number;
   ticksRemaining: number;
+  /** Route as list of location IDs from origin to destination (includes both endpoints) */
+  route: string[];
 }
 
 /** Player's action for the next tick */
 export interface PlayerOrder {
   entityId: string;
-  /** For producers: start a job. For others: order from upstream. */
-  action: 'produce' | 'order';
-  /** Process ID (for produce) or resource ID (for order) */
+  /** start_line: start a new process line. stop_line: stop an existing line. order: order resources. */
+  action: 'start_line' | 'stop_line' | 'order';
+  /** Process ID (for start_line) or resource ID (for order) */
   targetId: string;
+  /** For order: quantity. For start_line: initial volume. */
   quantity: number;
   /** For orders: which supplier to order from (if not specified, picks best available) */
   supplierId?: string;
+  /** For stop_line: which specific process line to stop */
+  lineId?: string;
 }
 
 /** Tracks current position in demand cycle */
@@ -195,7 +226,8 @@ export interface SalesStats {
 export interface GameState {
   tick: number;
   entities: Entity[];
-  jobs: Job[];
+  /** Active process lines (continuous production) */
+  processLines: ProcessLine[];
   /** All orders (including history) */
   orders: Order[];
   /** Active deliveries in transit */
@@ -215,4 +247,12 @@ export interface SupplierOption {
   entityName: string;
   availableStock: number;
   transportTicks: number;
+}
+
+/** Result of shortest-path computation */
+export interface PathResult {
+  /** Total corridor cost (does NOT include local transport at endpoints) */
+  cost: number;
+  /** List of location IDs from origin to destination (inclusive) */
+  path: string[];
 }

@@ -20,6 +20,7 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
     name: scenarioEntity.name,
     locationId: scenarioEntity.locationId,
     inventory: { ...scenarioEntity.inventory },
+    committed: {},
     isPlayerControlled: scenarioEntity.id === actualPlayerEntityId,
     suppliers: scenarioEntity.suppliers ?? {},
   }));
@@ -41,7 +42,7 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
   return {
     tick: 0,
     entities,
-    jobs: [],
+    processLines: [],
     orders: [],
     deliveries: [],
     demandPhase: {

@@ -3,49 +3,61 @@
     "mineral_mine": {
       "name": "Mineral Mine",
       "canHold": ["raw_materials"],
-      "maxConcurrentJobs": 1,
+      "maxProcessLines": 1,
       "processes": [
         {
           "id": "extract_minerals",
           "name": "Extract Minerals",
-          "inputs": [],
+          "cycleInputs": [],
+          "tickInputs": [],
           "outputs": [{ "resource": "raw_materials", "quantity": 2 }],
-          "ticks": 1
+          "cycleTicks": 1,
+          "startupTicks": 0,
+          "minVolume": 1,
+          "maxVolume": 1
         }
       ]
     },
     "chip_processor": {
       "name": "Chip Processor",
       "canHold": ["raw_materials", "chips"],
-      "maxConcurrentJobs": 3,
+      "maxProcessLines": 3,
       "processes": [
         {
           "id": "fabricate_chips",
           "name": "Fabricate Chips",
-          "inputs": [{ "resource": "raw_materials", "quantity": 1 }],
+          "cycleInputs": [{ "resource": "raw_materials", "quantity": 1 }],
+          "tickInputs": [],
           "outputs": [{ "resource": "chips", "quantity": 6 }],
-          "ticks": 3
+          "cycleTicks": 3,
+          "startupTicks": 0,
+          "minVolume": 1,
+          "maxVolume": 1
         }
       ]
     },
     "assembler": {
       "name": "Assembler",
       "canHold": ["chips", "smartphones"],
-      "maxConcurrentJobs": 3,
+      "maxProcessLines": 3,
       "processes": [
         {
           "id": "assemble_phone",
           "name": "Assemble Phone",
-          "inputs": [{ "resource": "chips", "quantity": 5 }],
+          "cycleInputs": [{ "resource": "chips", "quantity": 5 }],
+          "tickInputs": [],
           "outputs": [{ "resource": "smartphones", "quantity": 12 }],
-          "ticks": 4
+          "cycleTicks": 4,
+          "startupTicks": 0,
+          "minVolume": 1,
+          "maxVolume": 1
         }
       ]
     },
     "retailer": {
       "name": "Retailer",
       "canHold": ["smartphones"],
-      "maxConcurrentJobs": 0,
+      "maxProcessLines": 0,
       "processes": []
     }
   }

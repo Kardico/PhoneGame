@@ -1,6 +1,6 @@
 {
   "name": "Standard Smartphone Supply Chain",
-  "description": "1 mine, 1 chip processor, 1 assembler, 2 competing retailers",
+  "description": "1 mine, 2 chip processors, 1 assembler, 2 competing retailers",
   "entities": [
     {
       "id": "mine-1",
@@ -20,7 +20,7 @@
         "raw_materials": ["mine-1"]
       }
     },
-	    {
+    {
       "id": "chip-2",
       "type": "chip_processor",
       "name": "Hot Chips",
@@ -37,8 +37,7 @@
       "locationId": "tech_city",
       "inventory": { "chips": 5, "smartphones": 8 },
       "suppliers": {
-        "chips": ["chip-1"],
-        "chips": ["chip-2"]
+        "chips": ["chip-1", "chip-2"]
       }
     },
     {

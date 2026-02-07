@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Entity, Job, Delivery, Order, PlayerOrder } from '../types/game';
+import type { Entity, ProcessLine, Delivery, Order, PlayerOrder } from '../types/game';
 import { useTickEngine } from '../hooks/useTickEngine';
 import {
   getGameConfig,
@@ -10,6 +10,7 @@ import {
   getDeliveriesForEntity,
   getEntityName,
   getSuppliersForResource,
+  getProcessLinesForEntity,
 } from '../engine/tickProcessor';
 
 // ============================================================================
@@ -26,18 +27,22 @@ interface OrderHistoryItemProps {
 function OrderHistoryItem({ order, entityId, getResourceName, getEntityNameFn }: OrderHistoryItemProps) {
   const isBuyer = order.buyerEntityId === entityId;
   const otherEntity = isBuyer ? order.sellerEntityId : order.buyerEntityId;
-  
-  const statusColor = {
+
+  const statusColor: Record<string, string> = {
     pending: 'text-yellow-400',
+    accepted: 'text-cyan-400',
     in_transit: 'text-blue-400',
     delivered: 'text-emerald-400',
-  }[order.status];
+    declined: 'text-red-400',
+  };
 
-  const statusLabel = {
+  const statusLabel: Record<string, string> = {
     pending: 'Pending',
+    accepted: 'Accepted',
     in_transit: 'In Transit',
     delivered: 'Delivered',
-  }[order.status];
+    declined: 'Declined',
+  };
 
   return (
     <div className="text-xs border-b border-slate-700/50 py-1.5 last:border-0">
@@ -53,10 +58,14 @@ function OrderHistoryItem({ order, entityId, getResourceName, getEntityNameFn }:
             <span className="line-through text-slate-500">{order.requestedQuantity}</span>
             <span className="text-orange-400 ml-1">{order.fulfilledQuantity}</span>
           </span>
-        ) : (
+        ) : order.fulfilledQuantity > 0 ? (
           <span className="text-slate-300">×{order.fulfilledQuantity}</span>
+        ) : (
+          <span className="text-slate-300">×{order.requestedQuantity}</span>
         )}
-        <span className={`${statusColor} text-[10px]`}>{statusLabel}</span>
+        <span className={`${statusColor[order.status] ?? 'text-slate-400'} text-[10px]`}>
+          {statusLabel[order.status] ?? order.status}
+        </span>
       </div>
       <div className="text-slate-500 text-[10px] mt-0.5">
         {isBuyer ? 'from' : 'to'} <span className="text-slate-400">{getEntityNameFn(otherEntity)}</span>
@@ -73,7 +82,7 @@ function OrderHistoryItem({ order, entityId, getResourceName, getEntityNameFn }:
 
 interface EntityCardProps {
   entity: Entity;
-  jobs: Job[];
+  processLines: ProcessLine[];
   incomingDeliveries: Delivery[];
   outgoingDeliveries: Delivery[];
   orders: Order[];
@@ -85,7 +94,7 @@ interface EntityCardProps {
 
 function EntityCard({
   entity,
-  jobs,
+  processLines,
   incomingDeliveries,
   outgoingDeliveries,
   orders,
@@ -103,15 +112,15 @@ function EntityCard({
   const inventoryEntries = Object.entries(entity.inventory).filter(
     ([, qty]) => qty !== undefined && qty > 0
   );
-
-  // Determine what player can do
   const canProduce = entityType.processes.length > 0;
   const process = canProduce ? entityType.processes[0] : null;
-  
+
   // For ordering: determine what resource this entity needs
   let orderResource: string | null = null;
-  if (process && process.inputs.length > 0) {
-    orderResource = process.inputs[0].resource;
+  if (process && process.cycleInputs.length > 0) {
+    orderResource = process.cycleInputs[0].resource;
+  } else if (process && process.tickInputs.length > 0) {
+    orderResource = process.tickInputs[0].resource;
   } else if (entityType.canHold.includes('smartphones') && !canProduce) {
     orderResource = 'smartphones';
   }
@@ -120,30 +129,38 @@ function EntityCard({
   const availableSuppliers = orderResource
     ? getSuppliersForResource(gameState, config, entity.id, orderResource)
     : [];
-  
+
   const hasSuppliers = availableSuppliers.length > 0;
 
   // Get currently selected supplier (or first available)
   const currentSupplierId = selectedSupplierId || (availableSuppliers[0]?.entityId ?? '');
   const currentSupplier = availableSuppliers.find(s => s.entityId === currentSupplierId);
 
-  // Check if can start production
-  const activeJobCount = jobs.length;
-  const atCapacity = activeJobCount >= entityType.maxConcurrentJobs;
-  const hasInputsForProduction = process?.inputs.every(
-    (input) => (entity.inventory[input.resource] ?? 0) >= input.quantity
-  ) ?? true;
+  // Check if can start a new process line
+  const atCapacity = processLines.length >= entityType.maxProcessLines;
 
-  // Count pending orders (in_transit to this entity)
-  const pendingOrdersCount = orders.filter(o => o.buyerEntityId === entity.id && o.status === 'in_transit').length;
+  // Count pending/in-transit orders (as buyer)
+  const activeOrdersCount = orders.filter(
+    o => o.buyerEntityId === entity.id && (o.status === 'pending' || o.status === 'accepted' || o.status === 'in_transit')
+  ).length;
 
-  const handleProduce = () => {
+  const handleStartLine = () => {
     if (!process || atCapacity) return;
     onSubmitOrder({
       entityId: entity.id,
-      action: 'produce',
+      action: 'start_line',
       targetId: process.id,
-      quantity: 1,
+      quantity: process.minVolume,
+    });
+  };
+
+  const handleStopLine = (lineId: string) => {
+    onSubmitOrder({
+      entityId: entity.id,
+      action: 'stop_line',
+      targetId: '',
+      quantity: 0,
+      lineId,
     });
   };
 
@@ -165,15 +182,19 @@ function EntityCard({
 
   const getEntityNameFn = (id: string) => getEntityName(gameState, id);
 
+  const getLocationName = (id: string) => {
+    return config.locations.find((l) => l.id === id)?.name ?? id;
+  };
+
   return (
     <div className={`rounded-xl border ${isPlayer ? 'border-amber-500' : 'border-slate-600'} bg-slate-800/50 overflow-hidden`}>
       {/* Header */}
       <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-slate-600 bg-slate-800/80">
         <div className="font-medium text-slate-200">{entity.name}</div>
         <div className="text-xs text-slate-500">{entityType.name}</div>
-        {pendingOrdersCount > 0 && (
-          <span className="rounded-full bg-blue-600/30 px-2 py-0.5 text-xs text-blue-300" title="Orders awaiting delivery">
-            📦 {pendingOrdersCount}
+        {activeOrdersCount > 0 && (
+          <span className="rounded-full bg-blue-600/30 px-2 py-0.5 text-xs text-blue-300" title="Active orders">
+            📦 {activeOrdersCount}
           </span>
         )}
         {isPlayer && (
@@ -190,26 +211,63 @@ function EntityCard({
           {inventoryEntries.length === 0 ? (
             <span className="text-slate-500">Empty</span>
           ) : (
-            inventoryEntries.map(([res, qty]) => (
-              <span key={res} className="rounded bg-slate-700 px-2 py-0.5 text-slate-300">
-                {getResourceName(res)}: <strong>{qty}</strong>
-              </span>
-            ))
+            inventoryEntries.map(([res, qty]) => {
+              const comm = entity.committed[res] ?? 0;
+              return (
+                <span key={res} className="rounded bg-slate-700 px-2 py-0.5 text-slate-300">
+                  {getResourceName(res)}: <strong>{qty}</strong>
+                  {comm > 0 && (
+                    <span className="text-orange-400 text-xs ml-1" title="Committed (reserved for shipping)">
+                      ({comm} reserved)
+                    </span>
+                  )}
+                </span>
+              );
+            })
           )}
         </div>
       </div>
 
-      {/* Active Jobs */}
-      {jobs.length > 0 && (
+      {/* Process Lines */}
+      {(processLines.length > 0 || (canProduce && isPlayer)) && (
         <div className="px-4 py-2 border-b border-slate-700">
-          <div className="text-xs text-slate-500 mb-1">Production ({jobs.length}/{entityType.maxConcurrentJobs})</div>
-          <ul className="text-sm text-slate-400 space-y-0.5">
-            {jobs.map((job) => (
-              <li key={job.id}>
-                {job.outputs.map((o) => `${getResourceName(o.resource)} ×${o.quantity}`).join(', ')} — {job.ticksRemaining}t left
-              </li>
-            ))}
-          </ul>
+          <div className="text-xs text-slate-500 mb-1">
+            Production Lines ({processLines.length}/{entityType.maxProcessLines})
+          </div>
+          {processLines.length > 0 && (
+            <ul className="text-sm text-slate-400 space-y-1">
+              {processLines.map((line) => {
+                const proc = entityType.processes.find(p => p.id === line.processId);
+                return (
+                  <li key={line.id} className="flex items-center gap-2">
+                    <span className="text-slate-300">{proc?.name ?? line.processId}</span>
+                    {line.phase === 'starting' ? (
+                      <span className="text-yellow-400 text-xs">
+                        Starting ({line.startupTicksRemaining}t)
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 text-xs">
+                        {line.progress}/{proc?.cycleTicks ?? '?'}
+                      </span>
+                    )}
+                    {line.volume > 1 && (
+                      <span className="text-xs text-slate-500">×{line.volume}</span>
+                    )}
+                    {isPlayer && (
+                      <button
+                        type="button"
+                        onClick={() => handleStopLine(line.id)}
+                        className="ml-auto text-xs text-red-400 hover:text-red-300"
+                        title="Stop this line"
+                      >
+                        Stop
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       )}
 
@@ -224,6 +282,11 @@ function EntityCard({
                 <span className="text-slate-300">{getResourceName(d.resource)} ×{d.quantity}</span>{' '}
                 <span className="text-slate-500">from {getEntityNameFn(d.fromEntityId)}</span>{' '}
                 <span className="text-slate-400">— {d.ticksRemaining}t</span>
+                {d.route.length > 2 && (
+                  <span className="text-slate-600 text-xs ml-1" title="Route">
+                    via {d.route.slice(1, -1).map(getLocationName).join(' → ')}
+                  </span>
+                )}
               </li>
             ))}
             {outgoingDeliveries.map((d) => (
@@ -232,6 +295,11 @@ function EntityCard({
                 <span className="text-slate-300">{getResourceName(d.resource)} ×{d.quantity}</span>{' '}
                 <span className="text-slate-500">to {getEntityNameFn(d.toEntityId)}</span>{' '}
                 <span className="text-slate-400">— {d.ticksRemaining}t</span>
+                {d.route.length > 2 && (
+                  <span className="text-slate-600 text-xs ml-1" title="Route">
+                    via {d.route.slice(1, -1).map(getLocationName).join(' → ')}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -246,33 +314,34 @@ function EntityCard({
             <div className="flex items-center gap-2 text-sm bg-amber-900/40 border border-amber-600/50 rounded px-3 py-2">
               <span className="text-amber-400 font-medium">Queued:</span>
               <span className="text-amber-200">
-                {pendingOrder.action === 'produce'
-                  ? `Produce ${pendingOrder.quantity}`
+                {pendingOrder.action === 'start_line'
+                  ? `Start ${process?.name ?? pendingOrder.targetId}`
+                  : pendingOrder.action === 'stop_line'
+                  ? `Stop line`
                   : `Order ${pendingOrder.quantity} ${getResourceName(pendingOrder.targetId)}${pendingOrder.supplierId ? ` from ${getEntityNameFn(pendingOrder.supplierId)}` : ''}`}
               </span>
               <span className="text-amber-500/70 text-xs">(next tick)</span>
             </div>
           )}
 
-          {/* Produce button */}
+          {/* Start line button */}
           {canProduce && process && (
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
-                onClick={handleProduce}
-                disabled={atCapacity || !hasInputsForProduction}
+                onClick={handleStartLine}
+                disabled={atCapacity}
                 className="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Produce
+                Start Line
               </button>
               <span className="text-xs text-slate-400">
-                {process.inputs.length > 0
-                  ? `${process.inputs.map((i) => `${i.quantity} ${getResourceName(i.resource)}`).join(', ')} → ${process.outputs.map((o) => `${o.quantity} ${getResourceName(o.resource)}`).join(', ')}`
+                {process.cycleInputs.length > 0
+                  ? `${process.cycleInputs.map((i) => `${i.quantity} ${getResourceName(i.resource)}`).join(', ')} → ${process.outputs.map((o) => `${o.quantity} ${getResourceName(o.resource)}`).join(', ')}`
                   : `→ ${process.outputs.map((o) => `${o.quantity} ${getResourceName(o.resource)}`).join(', ')}`}
-                {' '}({process.ticks}t)
+                {' '}({process.cycleTicks}t/cycle)
               </span>
               {atCapacity && <span className="text-xs text-orange-400">At capacity</span>}
-              {!hasInputsForProduction && !atCapacity && <span className="text-xs text-red-400">Need inputs</span>}
             </div>
           )}
 
@@ -297,13 +366,13 @@ function EntityCard({
                   Order
                 </button>
               </div>
-              
+
               {/* Supplier selection */}
               <div className="flex items-center gap-2 text-xs">
                 <span className="text-slate-500">From:</span>
                 {availableSuppliers.length === 1 ? (
                   <span className="text-slate-400">
-                    {currentSupplier?.entityName} ({currentSupplier?.stock} in stock, {currentSupplier?.transportTime}t delivery)
+                    {currentSupplier?.entityName} ({currentSupplier?.availableStock} available, {currentSupplier?.transportTime}t delivery)
                   </span>
                 ) : (
                   <select
@@ -313,7 +382,7 @@ function EntityCard({
                   >
                     {availableSuppliers.map((s) => (
                       <option key={s.entityId} value={s.entityId}>
-                        {s.entityName} ({s.stock} stock, {s.transportTime}t)
+                        {s.entityName} ({s.availableStock} avail, {s.transportTime}t)
                       </option>
                     ))}
                   </select>
@@ -334,8 +403,8 @@ function EntityCard({
       {/* Sales stats for retailers */}
       {gameState.sales[entity.id] && (
         <div className="px-4 py-2 bg-slate-900/50 text-xs text-slate-500">
-          Sold: {gameState.sales[entity.id].totalSold} | 
-          Lost: {gameState.sales[entity.id].lostSales} | 
+          Sold: {gameState.sales[entity.id].totalSold} |
+          Lost: {gameState.sales[entity.id].lostSales} |
           Total Demand: {gameState.sales[entity.id].totalDemand}
         </div>
       )}
@@ -403,10 +472,6 @@ export function DebugPanel({ playerEntityId }: DebugPanelProps) {
     }
     return map;
   }, [gameState.entities]);
-
-  // Get jobs for each entity
-  const getJobsForEntity = (entityId: string) =>
-    gameState.jobs.filter((j) => j.entityId === entityId);
 
   const phaseName = getCurrentPhaseName(gameState);
   const phaseProgress = getPhaseProgress(gameState);
@@ -483,11 +548,12 @@ export function DebugPanel({ playerEntityId }: DebugPanelProps) {
                   {entities.map((entity) => {
                     const deliveries = getDeliveriesForEntity(gameState, entity.id);
                     const orders = getOrdersForEntity(gameState, entity.id);
+                    const lines = getProcessLinesForEntity(gameState, entity.id);
                     return (
                       <EntityCard
                         key={entity.id}
                         entity={entity}
-                        jobs={getJobsForEntity(entity.id)}
+                        processLines={lines}
                         incomingDeliveries={deliveries.incoming}
                         outgoingDeliveries={deliveries.outgoing}
                         orders={orders}
