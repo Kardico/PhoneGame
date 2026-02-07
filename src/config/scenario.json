@@ -37,7 +37,8 @@
       "locationId": "tech_city",
       "inventory": { "chips": 5, "smartphones": 8 },
       "suppliers": {
-        "chips": ["chip-1"]
+        "chips": ["chip-1"],
+        "chips": ["chip-2"]
       }
     },
     {
