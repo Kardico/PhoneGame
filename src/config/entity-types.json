@@ -14,7 +14,7 @@
           "cycleTicks": 1,
           "startupTicks": 0,
           "minVolume": 1,
-          "maxVolume": 1
+          "maxVolume": 4
         }
       ]
     },
@@ -48,9 +48,9 @@
           "tickInputs": [],
           "outputs": [{ "resource": "smartphones", "quantity": 12 }],
           "cycleTicks": 4,
-          "startupTicks": 0,
+          "startupTicks": 2,
           "minVolume": 1,
-          "maxVolume": 1
+          "maxVolume": 3
         }
       ]
     },

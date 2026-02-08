@@ -448,6 +448,7 @@ function placePendingOrder(
     }
   }
 
+  // If seller id is provided (by the player), use it. Otherwise, find the best supplier.
   if (!seller) {
     seller = findBestSupplier(state, config, buyerEntityId, resource);
   }
@@ -621,7 +622,7 @@ function processDepartures(state: GameState, config: GameConfig): GameState {
 // ============================================================================
 
 /** Threshold below which AI orders more resources */
-const AI_REORDER_THRESHOLD = 5;
+const AI_REORDER_THRESHOLD = 10;
 /** How much AI tries to order at once */
 const AI_ORDER_QUANTITY = 10;
 /** Threshold above which mine pauses production */

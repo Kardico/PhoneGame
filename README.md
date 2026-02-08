@@ -296,10 +296,10 @@ Key design: **arrivals happen first** (stock from completed deliveries is availa
 
 | Function | Phase | Description |
 |----------|-------|-------------|
-| `processArrivals(state)` | 2 | Complete deliveries, add stock to buyers, update order status to `'delivered'` |
-| `advanceDemandPhase(state, config)` | 3 | Move through demand cycle phases |
-| `processProductionLines(state, config)` | 4 | Advance startup, consume inputs, advance progress, produce outputs on cycle completion |
-| `processSelling(state, config)` | 5 | Retailers sell `min(stock, demand)`, update sales stats |
+| `processArrivals(state)` | 1 | Complete deliveries, add stock to buyers, update order status to `'delivered'` |
+| `advanceDemandPhase(state, config)` | 2 | Move through demand cycle phases |
+| `processProductionLines(state, config)` | 3 | Advance startup, consume inputs, advance progress, produce outputs on cycle completion |
+| `processSelling(state, config)` | 4 | Retailers sell `min(stock, demand)`, update sales stats |
 | `processPlayerOrder(state, config, action)` | 6a | Handle player actions: `start_line`, `stop_line`, `order` |
 | `processAIDecisions(state, config)` | 6b | AI starts/stops lines, places orders |
 | `processOrderAcceptance(state, config)` | 7 | Sellers accept/decline pending orders, commit stock |
