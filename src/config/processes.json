@@ -1,0 +1,81 @@
+{
+  "production": [
+    {
+      "id": "extract_minerals",
+      "name": "Extract Minerals",
+      "startupInputs": [],
+      "cycleInputs": [],
+      "tickInputs": [],
+      "outputs": [{ "resource": "raw_materials", "quantity": 2 }],
+      "cycleTicks": 1,
+      "startupTicks": 0,
+      "minVolume": 1,
+      "maxVolume": 4
+    },
+    {
+      "id": "fabricate_chips",
+      "name": "Fabricate Chips",
+      "startupInputs": [],
+      "cycleInputs": [{ "resource": "raw_materials", "quantity": 1 }],
+      "tickInputs": [],
+      "outputs": [{ "resource": "chips", "quantity": 6 }],
+      "cycleTicks": 3,
+      "startupTicks": 0,
+      "minVolume": 1,
+      "maxVolume": 1
+    },
+    {
+      "id": "assemble_phone",
+      "name": "Assemble Phone",
+      "startupInputs": [],
+      "cycleInputs": [{ "resource": "chips", "quantity": 5 }],
+      "tickInputs": [],
+      "outputs": [{ "resource": "smartphones", "quantity": 12 }],
+      "cycleTicks": 4,
+      "startupTicks": 2,
+      "minVolume": 1,
+      "maxVolume": 3
+    }
+  ],
+  "retail": [
+    {
+      "id": "retail_smartphones",
+      "name": "Sell Smartphones",
+      "resource": "smartphones"
+    }
+  ],
+  "procurement": [
+    {
+      "id": "buy_raw_materials",
+      "name": "Buy Raw Materials",
+      "resource": "raw_materials"
+    },
+    {
+      "id": "buy_chips",
+      "name": "Buy Chips",
+      "resource": "chips"
+    },
+    {
+      "id": "buy_smartphones",
+      "name": "Buy Smartphones",
+      "resource": "smartphones"
+    }
+  ],
+  "fulfillment": [
+    {
+      "id": "sell_raw_materials",
+      "name": "Sell Raw Materials",
+      "resource": "raw_materials"
+    },
+    {
+      "id": "sell_chips",
+      "name": "Sell Chips",
+      "resource": "chips"
+    },
+    {
+      "id": "sell_smartphones_wholesale",
+      "name": "Sell Smartphones (Wholesale)",
+      "resource": "smartphones"
+    }
+  ]
+}

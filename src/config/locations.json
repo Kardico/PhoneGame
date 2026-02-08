@@ -4,31 +4,58 @@
       "id": "mine_region",
       "name": "Mine Region",
       "localTransportTicks": 1,
-      "baseDemand": 0
+      "demand": {}
     },
     {
       "id": "hot_city",
       "name": "Hot City",
       "localTransportTicks": 1,
-      "baseDemand": 5
+      "demand": { "smartphones": 5 },
+      "demandCycle": {
+        "phases": [
+          { "name": "Normal", "ticks": 15, "multiplier": 1.0 },
+          { "name": "Growth", "ticks": 10, "multiplier": 1.3 },
+          { "name": "Peak", "ticks": 5, "multiplier": 1.8 },
+          { "name": "Decline", "ticks": 10, "multiplier": 0.7 }
+        ],
+        "variance": 0.15
+      }
     },
     {
       "id": "tech_city",
       "name": "Tech City",
       "localTransportTicks": 1,
-      "baseDemand": 0
+      "demand": {}
     },
     {
       "id": "market_a",
       "name": "Market A",
       "localTransportTicks": 1,
-      "baseDemand": 8
+      "demand": { "smartphones": 8 },
+      "demandCycle": {
+        "phases": [
+          { "name": "Normal", "ticks": 20, "multiplier": 1.0 },
+          { "name": "Growth", "ticks": 8, "multiplier": 1.5 },
+          { "name": "Peak", "ticks": 5, "multiplier": 2.0 },
+          { "name": "Decline", "ticks": 7, "multiplier": 0.6 }
+        ],
+        "variance": 0.15
+      }
     },
     {
       "id": "market_b",
       "name": "Market B",
       "localTransportTicks": 1,
-      "baseDemand": 6
+      "demand": { "smartphones": 6 },
+      "demandCycle": {
+        "phases": [
+          { "name": "Normal", "ticks": 12, "multiplier": 1.0 },
+          { "name": "Growth", "ticks": 12, "multiplier": 1.2 },
+          { "name": "Peak", "ticks": 8, "multiplier": 1.6 },
+          { "name": "Decline", "ticks": 8, "multiplier": 0.8 }
+        ],
+        "variance": 0.10
+      }
     }
   ],
   "corridors": [
@@ -40,14 +67,5 @@
     { "locationA": "tech_city", "locationB": "market_a", "cost": 2, "type": "land" },
     { "locationA": "tech_city", "locationB": "market_b", "cost": 3, "type": "land" },
     { "locationA": "market_a", "locationB": "market_b", "cost": 2, "type": "land" }
-  ],
-  "demandCycle": {
-    "phases": [
-      { "name": "Normal", "ticks": 15, "multiplier": 1.0 },
-      { "name": "Growth", "ticks": 10, "multiplier": 1.3 },
-      { "name": "Peak", "ticks": 5, "multiplier": 1.8 },
-      { "name": "Decline", "ticks": 10, "multiplier": 0.7 }
-    ],
-    "variance": 0.15
-  }
+  ]
 }

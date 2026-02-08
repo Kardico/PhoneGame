@@ -9,14 +9,23 @@ import type {
   EntityTypeConfig,
   LocationsConfig,
   ScenarioConfig,
+  SettingsConfig,
+  ProcessesConfig,
+  ProductionProcess,
+  RetailProcess,
+  ProcurementProcess,
+  FulfillmentProcess,
   CorridorConfig,
   PathResult,
+  LocationConfig,
 } from '../types/game';
 
 import resourcesJson from '../config/resources.json';
 import entityTypesJson from '../config/entity-types.json';
 import locationsJson from '../config/locations.json';
 import scenarioJson from '../config/scenario.json';
+import processesJson from '../config/processes.json';
+import settingsJson from '../config/settings.json';
 
 // ============================================================================
 // CONFIG LOADING
@@ -28,14 +37,18 @@ export function loadGameConfig(): GameConfig {
   const entityTypes = (entityTypesJson as { entityTypes: Record<string, EntityTypeConfig> }).entityTypes;
   const locationsConfig = locationsJson as unknown as LocationsConfig;
   const scenario = scenarioJson as unknown as ScenarioConfig;
+  const processes = processesJson as unknown as ProcessesConfig;
+  const settings = settingsJson as unknown as SettingsConfig;
 
   const config: GameConfig = {
     resources,
+    processes,
     entityTypes,
     locations: locationsConfig.locations,
     corridors: locationsConfig.corridors,
-    demandCycle: locationsConfig.demandCycle,
     scenario,
+    tickSpeeds: settings.tickSpeeds,
+    defaultSpeed: settings.defaultSpeed,
   };
 
   validateConfig(config);
@@ -52,44 +65,89 @@ function validateConfig(config: GameConfig): void {
   const locationIds = new Set(config.locations.map((l) => l.id));
   const entityTypeIds = new Set(Object.keys(config.entityTypes));
 
+  // Build sets of all process IDs by category
+  const productionIds = new Set(config.processes.production.map((p) => p.id));
+  const retailIds = new Set(config.processes.retail.map((p) => p.id));
+  const procurementIds = new Set(config.processes.procurement.map((p) => p.id));
+  const fulfillmentIds = new Set(config.processes.fulfillment.map((p) => p.id));
+
+  // Validate process definitions
+  for (const proc of config.processes.production) {
+    for (const input of proc.startupInputs) {
+      if (!resourceIds.has(input.resource)) {
+        throw new Error(`Production process "${proc.id}" has unknown startupInput resource "${input.resource}"`);
+      }
+    }
+    for (const input of proc.cycleInputs) {
+      if (!resourceIds.has(input.resource)) {
+        throw new Error(`Production process "${proc.id}" has unknown cycleInput resource "${input.resource}"`);
+      }
+    }
+    for (const input of proc.tickInputs) {
+      if (!resourceIds.has(input.resource)) {
+        throw new Error(`Production process "${proc.id}" has unknown tickInput resource "${input.resource}"`);
+      }
+    }
+    for (const output of proc.outputs) {
+      if (!resourceIds.has(output.resource)) {
+        throw new Error(`Production process "${proc.id}" has unknown output resource "${output.resource}"`);
+      }
+    }
+    if (proc.cycleTicks <= 0) {
+      throw new Error(`Production process "${proc.id}" must have positive cycleTicks`);
+    }
+    if (proc.startupTicks < 0) {
+      throw new Error(`Production process "${proc.id}" must have non-negative startupTicks`);
+    }
+    if (proc.minVolume <= 0 || proc.maxVolume <= 0) {
+      throw new Error(`Production process "${proc.id}" must have positive min/maxVolume`);
+    }
+    if (proc.minVolume > proc.maxVolume) {
+      throw new Error(`Production process "${proc.id}" minVolume cannot exceed maxVolume`);
+    }
+  }
+  for (const proc of config.processes.retail) {
+    if (!resourceIds.has(proc.resource)) {
+      throw new Error(`Retail process "${proc.id}" has unknown resource "${proc.resource}"`);
+    }
+  }
+  for (const proc of config.processes.procurement) {
+    if (!resourceIds.has(proc.resource)) {
+      throw new Error(`Procurement process "${proc.id}" has unknown resource "${proc.resource}"`);
+    }
+  }
+  for (const proc of config.processes.fulfillment) {
+    if (!resourceIds.has(proc.resource)) {
+      throw new Error(`Fulfillment process "${proc.id}" has unknown resource "${proc.resource}"`);
+    }
+  }
+
   // Validate entity types
   for (const [typeId, entityType] of Object.entries(config.entityTypes)) {
-    // Check canHold references valid resources
     for (const res of entityType.canHold) {
       if (!resourceIds.has(res)) {
         throw new Error(`Entity type "${typeId}" canHold unknown resource "${res}"`);
       }
     }
-
-    // Check process inputs/outputs reference valid resources
-    for (const process of entityType.processes) {
-      for (const input of process.cycleInputs) {
-        if (!resourceIds.has(input.resource)) {
-          throw new Error(`Process "${process.id}" in "${typeId}" has unknown cycleInput resource "${input.resource}"`);
-        }
+    // Validate process references
+    for (const pid of entityType.processes.production) {
+      if (!productionIds.has(pid)) {
+        throw new Error(`Entity type "${typeId}" references unknown production process "${pid}"`);
       }
-      for (const input of process.tickInputs) {
-        if (!resourceIds.has(input.resource)) {
-          throw new Error(`Process "${process.id}" in "${typeId}" has unknown tickInput resource "${input.resource}"`);
-        }
+    }
+    for (const pid of entityType.processes.retail) {
+      if (!retailIds.has(pid)) {
+        throw new Error(`Entity type "${typeId}" references unknown retail process "${pid}"`);
       }
-      for (const output of process.outputs) {
-        if (!resourceIds.has(output.resource)) {
-          throw new Error(`Process "${process.id}" in "${typeId}" has unknown output resource "${output.resource}"`);
-        }
+    }
+    for (const pid of entityType.processes.procurement) {
+      if (!procurementIds.has(pid)) {
+        throw new Error(`Entity type "${typeId}" references unknown procurement process "${pid}"`);
       }
-      // Validate process numeric fields
-      if (process.cycleTicks <= 0) {
-        throw new Error(`Process "${process.id}" in "${typeId}" must have positive cycleTicks`);
-      }
-      if (process.startupTicks < 0) {
-        throw new Error(`Process "${process.id}" in "${typeId}" must have non-negative startupTicks`);
-      }
-      if (process.minVolume <= 0 || process.maxVolume <= 0) {
-        throw new Error(`Process "${process.id}" in "${typeId}" must have positive min/maxVolume`);
-      }
-      if (process.minVolume > process.maxVolume) {
-        throw new Error(`Process "${process.id}" in "${typeId}" minVolume cannot exceed maxVolume`);
+    }
+    for (const pid of entityType.processes.fulfillment) {
+      if (!fulfillmentIds.has(pid)) {
+        throw new Error(`Entity type "${typeId}" references unknown fulfillment process "${pid}"`);
       }
     }
   }
@@ -113,6 +171,30 @@ function validateConfig(config: GameConfig): void {
   // Validate corridor network connectivity (all locations reachable)
   validateCorridorConnectivity(config.locations.map((l) => l.id), config.corridors);
 
+  // Validate locations — demand cycles required for locations with demand
+  for (const location of config.locations) {
+    const hasDemand = Object.values(location.demand).some((d) => d > 0);
+    if (hasDemand && !location.demandCycle) {
+      throw new Error(`Location "${location.id}" has demand but no demandCycle defined`);
+    }
+    if (location.demandCycle) {
+      if (location.demandCycle.phases.length === 0) {
+        throw new Error(`Location "${location.id}" demandCycle must have at least one phase`);
+      }
+      for (const phase of location.demandCycle.phases) {
+        if (phase.ticks <= 0) {
+          throw new Error(`Location "${location.id}" demand phase "${phase.name}" must have positive ticks`);
+        }
+      }
+    }
+    // Validate demand resource IDs
+    for (const res of Object.keys(location.demand)) {
+      if (!resourceIds.has(res)) {
+        throw new Error(`Location "${location.id}" has unknown demand resource "${res}"`);
+      }
+    }
+  }
+
   // Validate scenario entities
   for (const entity of config.scenario.entities) {
     if (!entityTypeIds.has(entity.type)) {
@@ -121,7 +203,6 @@ function validateConfig(config: GameConfig): void {
     if (!locationIds.has(entity.locationId)) {
       throw new Error(`Scenario entity "${entity.id}" has unknown location "${entity.locationId}"`);
     }
-    // Check inventory references valid resources
     for (const res of Object.keys(entity.inventory)) {
       if (!resourceIds.has(res)) {
         throw new Error(`Scenario entity "${entity.id}" has unknown resource "${res}" in inventory`);
@@ -134,16 +215,6 @@ function validateConfig(config: GameConfig): void {
   if (!entityIds.has(config.scenario.defaultPlayerEntity)) {
     throw new Error(`Default player entity "${config.scenario.defaultPlayerEntity}" not found in scenario`);
   }
-
-  // Validate demand cycle
-  if (config.demandCycle.phases.length === 0) {
-    throw new Error('Demand cycle must have at least one phase');
-  }
-  for (const phase of config.demandCycle.phases) {
-    if (phase.ticks <= 0) {
-      throw new Error(`Demand phase "${phase.name}" must have positive ticks`);
-    }
-  }
 }
 
 /**
@@ -151,9 +222,8 @@ function validateConfig(config: GameConfig): void {
  * Uses BFS from the first location to ensure all are reachable.
  */
 function validateCorridorConnectivity(locationIds: string[], corridors: CorridorConfig[]): void {
-  if (locationIds.length <= 1) return; // 0 or 1 location is trivially connected
+  if (locationIds.length <= 1) return;
 
-  // Build adjacency list
   const adj: Record<string, Set<string>> = {};
   for (const id of locationIds) {
     adj[id] = new Set();
@@ -163,7 +233,6 @@ function validateCorridorConnectivity(locationIds: string[], corridors: Corridor
     adj[corridor.locationB].add(corridor.locationA);
   }
 
-  // BFS from first location
   const visited = new Set<string>();
   const queue: string[] = [locationIds[0]];
   visited.add(locationIds[0]);
@@ -178,7 +247,6 @@ function validateCorridorConnectivity(locationIds: string[], corridors: Corridor
     }
   }
 
-  // Check all locations were reached
   const unreachable = locationIds.filter((id) => !visited.has(id));
   if (unreachable.length > 0) {
     throw new Error(
@@ -191,9 +259,7 @@ function validateCorridorConnectivity(locationIds: string[], corridors: Corridor
 // PATHFINDING
 // ============================================================================
 
-/**
- * Build an adjacency list from corridors (bi-directional).
- */
+/** Build an adjacency list from corridors (bi-directional). */
 function buildAdjacencyList(corridors: CorridorConfig[]): Record<string, { neighbor: string; cost: number }[]> {
   const adj: Record<string, { neighbor: string; cost: number }[]> = {};
 
@@ -211,7 +277,6 @@ function buildAdjacencyList(corridors: CorridorConfig[]): Record<string, { neigh
  * Dijkstra shortest-path over the corridor graph.
  * Returns the shortest path cost and the list of location IDs from origin to destination.
  * Cost is the sum of corridor costs only (no local transport).
- * Returns null if no path exists.
  */
 export function findShortestPath(corridors: CorridorConfig[], from: string, to: string): PathResult | null {
   if (from === to) {
@@ -220,21 +285,17 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
 
   const adj = buildAdjacencyList(corridors);
 
-  // Dijkstra
   const dist: Record<string, number> = {};
   const prev: Record<string, string | null> = {};
   const visited = new Set<string>();
 
-  // Initialize all known locations
   for (const loc of Object.keys(adj)) {
     dist[loc] = Infinity;
     prev[loc] = null;
   }
   dist[from] = 0;
 
-  // Simple priority queue using array (fine for small graphs)
   while (true) {
-    // Find unvisited node with smallest distance
     let current: string | null = null;
     let currentDist = Infinity;
     for (const [node, d] of Object.entries(dist)) {
@@ -243,7 +304,6 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
         currentDist = d;
       }
     }
-
     if (current === null || current === to) break;
     visited.add(current);
 
@@ -262,7 +322,6 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
     return null;
   }
 
-  // Reconstruct path
   const path: string[] = [];
   let node: string | null = to;
   while (node !== null) {
@@ -277,13 +336,8 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
 // CACHED PATH TABLE
 // ============================================================================
 
-/** Pre-computed path table for all location pairs */
 let cachedPathTable: Record<string, Record<string, PathResult>> | null = null;
 
-/**
- * Pre-compute shortest paths between all location pairs.
- * Called once when config is loaded.
- */
 function buildPathTable(config: GameConfig): Record<string, Record<string, PathResult>> {
   const table: Record<string, Record<string, PathResult>> = {};
   const locationIds = config.locations.map((l) => l.id);
@@ -301,10 +355,6 @@ function buildPathTable(config: GameConfig): Record<string, Record<string, PathR
   return table;
 }
 
-/**
- * Get the pre-computed path between two locations.
- * Returns { cost, path } where cost is corridor-only cost and path is the route.
- */
 function getPath(config: GameConfig, from: string, to: string): PathResult {
   if (!cachedPathTable) {
     cachedPathTable = buildPathTable(config);
@@ -324,7 +374,6 @@ function getPath(config: GameConfig, from: string, to: string): PathResult {
  * Get transport time between two locations.
  * Total = local(from) + corridor path cost + local(to).
  * For same-location: just local transport ticks (once).
- * Local transport is only counted at origin and destination, NOT at intermediate stops.
  */
 export function getTransportTime(
   config: GameConfig,
@@ -338,7 +387,6 @@ export function getTransportTime(
     throw new Error(`Unknown location: ${fromLocationId} or ${toLocationId}`);
   }
 
-  // Same location: just local transport
   if (fromLocationId === toLocationId) {
     return fromLocation.localTransportTicks;
   }
@@ -390,17 +438,44 @@ export function getEntityType(config: GameConfig, entity: { type: string }): Ent
   return entityType;
 }
 
-/** Get process definition by ID from an entity type */
-export function getProcess(entityType: EntityTypeConfig, processId: string) {
-  const process = entityType.processes.find((p) => p.id === processId);
+/** Get production process definition by ID */
+export function getProductionProcess(config: GameConfig, processId: string): ProductionProcess {
+  const process = config.processes.production.find((p) => p.id === processId);
   if (!process) {
-    throw new Error(`Unknown process "${processId}" in entity type "${entityType.name}"`);
+    throw new Error(`Unknown production process: ${processId}`);
+  }
+  return process;
+}
+
+/** Get retail process definition by ID */
+export function getRetailProcess(config: GameConfig, processId: string): RetailProcess {
+  const process = config.processes.retail.find((p) => p.id === processId);
+  if (!process) {
+    throw new Error(`Unknown retail process: ${processId}`);
+  }
+  return process;
+}
+
+/** Get procurement process definition by ID */
+export function getProcurementProcess(config: GameConfig, processId: string): ProcurementProcess {
+  const process = config.processes.procurement.find((p) => p.id === processId);
+  if (!process) {
+    throw new Error(`Unknown procurement process: ${processId}`);
+  }
+  return process;
+}
+
+/** Get fulfillment process definition by ID */
+export function getFulfillmentProcess(config: GameConfig, processId: string): FulfillmentProcess {
+  const process = config.processes.fulfillment.find((p) => p.id === processId);
+  if (!process) {
+    throw new Error(`Unknown fulfillment process: ${processId}`);
   }
   return process;
 }
 
 /** Get location config by ID */
-export function getLocation(config: GameConfig, locationId: string) {
+export function getLocation(config: GameConfig, locationId: string): LocationConfig {
   const location = config.locations.find((l) => l.id === locationId);
   if (!location) {
     throw new Error(`Unknown location: ${locationId}`);
@@ -421,7 +496,6 @@ export function getResource(config: GameConfig, resourceId: string) {
 // SINGLETON
 // ============================================================================
 
-/** Singleton config instance */
 let cachedConfig: GameConfig | null = null;
 
 export function getGameConfig(): GameConfig {

@@ -20,23 +20,74 @@ export interface ResourceAmount {
   quantity: number;
 }
 
-/** Process definition - what an entity CAN do */
-export interface Process {
+// --------------------------------------------------------------------------
+// Process categories (from processes.json)
+// --------------------------------------------------------------------------
+
+/** Production process - transforms inputs into outputs over time */
+export interface ProductionProcess {
   id: string;
   name: string;
-  /** Inputs consumed at the start of each production cycle */
+  /** Fixed inputs consumed once when a line starts up (NOT scaled by volume) */
+  startupInputs: ResourceAmount[];
+  /** Inputs consumed at the start of each production cycle (scaled by volume) */
   cycleInputs: ResourceAmount[];
-  /** Inputs consumed every tick while the line is running */
+  /** Inputs consumed every tick while the line is running (scaled by volume) */
   tickInputs: ResourceAmount[];
+  /** Outputs produced when a cycle completes (scaled by volume) */
   outputs: ResourceAmount[];
   /** Number of ticks per production cycle (at volume 1) */
   cycleTicks: number;
   /** Number of ticks to start up a new line */
   startupTicks: number;
-  /** Minimum volume (scale factor for inputs/outputs) */
+  /** Minimum volume (scale factor for cycle/tick inputs and outputs) */
   minVolume: number;
-  /** Maximum volume (scale factor for inputs/outputs) */
+  /** Maximum volume (scale factor for cycle/tick inputs and outputs) */
   maxVolume: number;
+}
+
+/** Retail process - sells a resource to consumers at a location */
+export interface RetailProcess {
+  id: string;
+  name: string;
+  /** Which resource this retail process sells */
+  resource: string;
+}
+
+/** Procurement process - entity can buy this resource from suppliers */
+export interface ProcurementProcess {
+  id: string;
+  name: string;
+  /** Which resource this procurement process acquires */
+  resource: string;
+}
+
+/** Fulfillment process - entity can fulfill orders for this resource */
+export interface FulfillmentProcess {
+  id: string;
+  name: string;
+  /** Which resource this fulfillment process ships */
+  resource: string;
+}
+
+/** All process definitions grouped by category */
+export interface ProcessesConfig {
+  production: ProductionProcess[];
+  retail: RetailProcess[];
+  procurement: ProcurementProcess[];
+  fulfillment: FulfillmentProcess[];
+}
+
+// --------------------------------------------------------------------------
+// Entity types (from entity-types.json)
+// --------------------------------------------------------------------------
+
+/** Process IDs that an entity type can run, grouped by category */
+export interface EntityTypeProcesses {
+  production: string[];
+  retail: string[];
+  procurement: string[];
+  fulfillment: string[];
 }
 
 /** Entity type definition from entity-types.json */
@@ -45,7 +96,25 @@ export interface EntityTypeConfig {
   canHold: string[];
   /** Maximum number of process lines that can run simultaneously */
   maxProcessLines: number;
-  processes: Process[];
+  /** Process IDs this entity type can use, by category */
+  processes: EntityTypeProcesses;
+}
+
+// --------------------------------------------------------------------------
+// Locations (from locations.json)
+// --------------------------------------------------------------------------
+
+/** Demand phase in a location's cycle */
+export interface DemandPhase {
+  name: string;
+  ticks: number;
+  multiplier: number;
+}
+
+/** Demand cycle configuration (per-location) */
+export interface DemandCycleConfig {
+  phases: DemandPhase[];
+  variance: number;
 }
 
 /** Location definition from locations.json */
@@ -53,7 +122,10 @@ export interface LocationConfig {
   id: string;
   name: string;
   localTransportTicks: number;
-  baseDemand: number;
+  /** Per-resource base demand at this location (e.g. { "smartphones": 8 }) */
+  demand: Record<string, number>;
+  /** Optional demand cycle for this location (only needed if demand > 0) */
+  demandCycle?: DemandCycleConfig;
 }
 
 /** Corridor type for transport links */
@@ -68,25 +140,27 @@ export interface CorridorConfig {
   type: CorridorType;
 }
 
-/** Demand phase in the cycle */
-export interface DemandPhase {
-  name: string;
-  ticks: number;
-  multiplier: number;
-}
-
-/** Demand cycle configuration */
-export interface DemandCycleConfig {
-  phases: DemandPhase[];
-  variance: number;
-}
-
 /** Full locations config file structure */
 export interface LocationsConfig {
   locations: LocationConfig[];
   corridors: CorridorConfig[];
-  demandCycle: DemandCycleConfig;
 }
+
+// --------------------------------------------------------------------------
+// Settings (from settings.json)
+// --------------------------------------------------------------------------
+
+/** Game settings */
+export interface SettingsConfig {
+  /** Map of speed level (1-5) to milliseconds per tick (0 = as fast as possible) */
+  tickSpeeds: Record<string, number>;
+  /** Default speed level on game start */
+  defaultSpeed: number;
+}
+
+// --------------------------------------------------------------------------
+// Scenario (from scenario.json)
+// --------------------------------------------------------------------------
 
 /** Entity definition in scenario */
 export interface ScenarioEntity {
@@ -107,14 +181,22 @@ export interface ScenarioConfig {
   defaultPlayerEntity: string;
 }
 
+// --------------------------------------------------------------------------
+// Full game config
+// --------------------------------------------------------------------------
+
 /** Full game configuration (all config files combined) */
 export interface GameConfig {
   resources: ResourceConfig[];
+  /** All process definitions by category */
+  processes: ProcessesConfig;
   entityTypes: Record<string, EntityTypeConfig>;
   locations: LocationConfig[];
   corridors: CorridorConfig[];
-  demandCycle: DemandCycleConfig;
   scenario: ScenarioConfig;
+  /** Tick speed settings */
+  tickSpeeds: Record<string, number>;
+  defaultSpeed: number;
 }
 
 // ============================================================================
@@ -141,9 +223,10 @@ export interface Entity {
 /** Phase of a running process line */
 export type ProcessLinePhase = 'starting' | 'running';
 
-/** A running instance of a process (continuous production line) */
+/** A running instance of a production process (continuous production line) */
 export interface ProcessLine {
   id: string;
+  /** Production process ID (references processes.production) */
   processId: string;
   entityId: string;
   /** Current phase: starting up or actively running */
@@ -209,14 +292,14 @@ export interface PlayerOrder {
   lineId?: string;
 }
 
-/** Tracks current position in demand cycle */
+/** Tracks current position in a location's demand cycle */
 export interface DemandPhaseState {
   phaseIndex: number;
   ticksInPhase: number;
 }
 
-/** Statistics for tracking sales */
-export interface SalesStats {
+/** Statistics for tracking sales (per resource) */
+export interface ResourceSalesStats {
   totalSold: number;
   totalDemand: number;
   lostSales: number;
@@ -232,9 +315,10 @@ export interface GameState {
   orders: Order[];
   /** Active deliveries in transit */
   deliveries: Delivery[];
-  demandPhase: DemandPhaseState;
-  /** Sales stats per retailer entity ID */
-  sales: Record<string, SalesStats>;
+  /** Per-location demand phase state: locationId -> DemandPhaseState */
+  demandPhases: Record<string, DemandPhaseState>;
+  /** Sales stats: entityId -> resourceId -> ResourceSalesStats */
+  sales: Record<string, Record<string, ResourceSalesStats>>;
 }
 
 // ============================================================================

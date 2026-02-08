@@ -4,61 +4,45 @@
       "name": "Mineral Mine",
       "canHold": ["raw_materials"],
       "maxProcessLines": 1,
-      "processes": [
-        {
-          "id": "extract_minerals",
-          "name": "Extract Minerals",
-          "cycleInputs": [],
-          "tickInputs": [],
-          "outputs": [{ "resource": "raw_materials", "quantity": 2 }],
-          "cycleTicks": 1,
-          "startupTicks": 0,
-          "minVolume": 1,
-          "maxVolume": 4
-        }
-      ]
+      "processes": {
+        "production": ["extract_minerals"],
+        "retail": [],
+        "procurement": [],
+        "fulfillment": ["sell_raw_materials"]
+      }
     },
     "chip_processor": {
       "name": "Chip Processor",
       "canHold": ["raw_materials", "chips"],
       "maxProcessLines": 3,
-      "processes": [
-        {
-          "id": "fabricate_chips",
-          "name": "Fabricate Chips",
-          "cycleInputs": [{ "resource": "raw_materials", "quantity": 1 }],
-          "tickInputs": [],
-          "outputs": [{ "resource": "chips", "quantity": 6 }],
-          "cycleTicks": 3,
-          "startupTicks": 0,
-          "minVolume": 1,
-          "maxVolume": 1
-        }
-      ]
+      "processes": {
+        "production": ["fabricate_chips"],
+        "retail": [],
+        "procurement": ["buy_raw_materials"],
+        "fulfillment": ["sell_chips"]
+      }
     },
     "assembler": {
       "name": "Assembler",
       "canHold": ["chips", "smartphones"],
       "maxProcessLines": 3,
-      "processes": [
-        {
-          "id": "assemble_phone",
-          "name": "Assemble Phone",
-          "cycleInputs": [{ "resource": "chips", "quantity": 5 }],
-          "tickInputs": [],
-          "outputs": [{ "resource": "smartphones", "quantity": 12 }],
-          "cycleTicks": 4,
-          "startupTicks": 2,
-          "minVolume": 1,
-          "maxVolume": 3
-        }
-      ]
+      "processes": {
+        "production": ["assemble_phone"],
+        "retail": [],
+        "procurement": ["buy_chips"],
+        "fulfillment": ["sell_smartphones_wholesale"]
+      }
     },
     "retailer": {
       "name": "Retailer",
       "canHold": ["smartphones"],
       "maxProcessLines": 0,
-      "processes": []
+      "processes": {
+        "production": [],
+        "retail": ["retail_smartphones"],
+        "procurement": ["buy_smartphones"],
+        "fulfillment": []
+      }
     }
   }
 }
