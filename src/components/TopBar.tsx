@@ -1,12 +1,13 @@
 /**
  * TopBar — always-visible sticky bar at the top of the screen.
- * Contains tick counter, speed control, and play/pause/step/reset buttons.
+ * Contains tick counter, player money, speed control, and play/pause/step/reset buttons.
  */
 
 interface TopBarProps {
   tick: number;
   isPaused: boolean;
   speed: number;
+  playerMoney?: number;
   onSetPaused: (paused: boolean) => void;
   onSetSpeed: (speed: number) => void;
   onStep: () => void;
@@ -26,6 +27,7 @@ export function TopBar({
   tick,
   isPaused,
   speed,
+  playerMoney,
   onSetPaused,
   onSetSpeed,
   onStep,
@@ -39,6 +41,19 @@ export function TopBar({
         <span className="text-slate-400 text-sm">Tick:</span>
         <span className="font-mono text-lg font-semibold text-white">{tick}</span>
       </div>
+
+      {/* Player money */}
+      {playerMoney !== undefined && (
+        <>
+          <div className="h-6 w-px bg-slate-700" />
+          <div className="flex items-center gap-1">
+            <span className="text-slate-400 text-sm">$</span>
+            <span className={`font-mono text-sm font-semibold ${playerMoney >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {playerMoney.toFixed(0)}
+            </span>
+          </div>
+        </>
+      )}
 
       {/* Separator */}
       <div className="h-6 w-px bg-slate-700" />

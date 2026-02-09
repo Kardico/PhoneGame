@@ -10,6 +10,7 @@ import type {
   LocationsConfig,
   ScenarioConfig,
   SettingsConfig,
+  PricingConfig,
   ProcessesConfig,
   ProductionProcess,
   RetailProcess,
@@ -26,12 +27,12 @@ import locationsJson from '../config/locations.json';
 import scenarioJson from '../config/scenario.json';
 import processesJson from '../config/processes.json';
 import settingsJson from '../config/settings.json';
+import pricingJson from '../config/pricing.json';
 
 // ============================================================================
 // CONFIG LOADING
 // ============================================================================
 
-/** Load and validate all game configuration */
 export function loadGameConfig(): GameConfig {
   const resources = (resourcesJson as { resources: ResourceConfig[] }).resources;
   const entityTypes = (entityTypesJson as { entityTypes: Record<string, EntityTypeConfig> }).entityTypes;
@@ -39,6 +40,7 @@ export function loadGameConfig(): GameConfig {
   const scenario = scenarioJson as unknown as ScenarioConfig;
   const processes = processesJson as unknown as ProcessesConfig;
   const settings = settingsJson as unknown as SettingsConfig;
+  const pricing = pricingJson as unknown as PricingConfig;
 
   const config: GameConfig = {
     resources,
@@ -47,8 +49,12 @@ export function loadGameConfig(): GameConfig {
     locations: locationsConfig.locations,
     corridors: locationsConfig.corridors,
     scenario,
+    pricing,
     tickSpeeds: settings.tickSpeeds,
     defaultSpeed: settings.defaultSpeed,
+    contractWaitTicks: settings.contractWaitTicks,
+    contractDefaultPenaltyRate: settings.contractDefaultPenaltyRate,
+    contractDefaultCancellationThreshold: settings.contractDefaultCancellationThreshold,
   };
 
   validateConfig(config);
@@ -59,13 +65,11 @@ export function loadGameConfig(): GameConfig {
 // VALIDATION
 // ============================================================================
 
-/** Validate configuration consistency */
 function validateConfig(config: GameConfig): void {
   const resourceIds = new Set(config.resources.map((r) => r.id));
   const locationIds = new Set(config.locations.map((l) => l.id));
   const entityTypeIds = new Set(Object.keys(config.entityTypes));
 
-  // Build sets of all process IDs by category
   const productionIds = new Set(config.processes.production.map((p) => p.id));
   const retailIds = new Set(config.processes.retail.map((p) => p.id));
   const procurementIds = new Set(config.processes.procurement.map((p) => p.id));
@@ -93,141 +97,101 @@ function validateConfig(config: GameConfig): void {
         throw new Error(`Production process "${proc.id}" has unknown output resource "${output.resource}"`);
       }
     }
-    if (proc.cycleTicks <= 0) {
-      throw new Error(`Production process "${proc.id}" must have positive cycleTicks`);
-    }
-    if (proc.startupTicks < 0) {
-      throw new Error(`Production process "${proc.id}" must have non-negative startupTicks`);
-    }
-    if (proc.minVolume <= 0 || proc.maxVolume <= 0) {
-      throw new Error(`Production process "${proc.id}" must have positive min/maxVolume`);
-    }
-    if (proc.minVolume > proc.maxVolume) {
-      throw new Error(`Production process "${proc.id}" minVolume cannot exceed maxVolume`);
-    }
+    if (proc.cycleTicks <= 0) throw new Error(`Production process "${proc.id}" must have positive cycleTicks`);
+    if (proc.startupTicks < 0) throw new Error(`Production process "${proc.id}" must have non-negative startupTicks`);
+    if (proc.minVolume <= 0 || proc.maxVolume <= 0) throw new Error(`Production process "${proc.id}" must have positive min/maxVolume`);
+    if (proc.minVolume > proc.maxVolume) throw new Error(`Production process "${proc.id}" minVolume cannot exceed maxVolume`);
   }
+
   for (const proc of config.processes.retail) {
-    if (!resourceIds.has(proc.resource)) {
-      throw new Error(`Retail process "${proc.id}" has unknown resource "${proc.resource}"`);
-    }
+    if (!resourceIds.has(proc.resource)) throw new Error(`Retail process "${proc.id}" has unknown resource "${proc.resource}"`);
   }
   for (const proc of config.processes.procurement) {
-    if (!resourceIds.has(proc.resource)) {
-      throw new Error(`Procurement process "${proc.id}" has unknown resource "${proc.resource}"`);
-    }
+    if (!resourceIds.has(proc.resource)) throw new Error(`Procurement process "${proc.id}" has unknown resource "${proc.resource}"`);
   }
   for (const proc of config.processes.fulfillment) {
-    if (!resourceIds.has(proc.resource)) {
-      throw new Error(`Fulfillment process "${proc.id}" has unknown resource "${proc.resource}"`);
-    }
+    if (!resourceIds.has(proc.resource)) throw new Error(`Fulfillment process "${proc.id}" has unknown resource "${proc.resource}"`);
   }
 
   // Validate entity types
   for (const [typeId, entityType] of Object.entries(config.entityTypes)) {
     for (const res of entityType.canHold) {
-      if (!resourceIds.has(res)) {
-        throw new Error(`Entity type "${typeId}" canHold unknown resource "${res}"`);
-      }
+      if (!resourceIds.has(res)) throw new Error(`Entity type "${typeId}" canHold unknown resource "${res}"`);
     }
-    // Validate process references
     for (const pid of entityType.processes.production) {
-      if (!productionIds.has(pid)) {
-        throw new Error(`Entity type "${typeId}" references unknown production process "${pid}"`);
-      }
+      if (!productionIds.has(pid)) throw new Error(`Entity type "${typeId}" references unknown production process "${pid}"`);
     }
     for (const pid of entityType.processes.retail) {
-      if (!retailIds.has(pid)) {
-        throw new Error(`Entity type "${typeId}" references unknown retail process "${pid}"`);
-      }
+      if (!retailIds.has(pid)) throw new Error(`Entity type "${typeId}" references unknown retail process "${pid}"`);
     }
     for (const pid of entityType.processes.procurement) {
-      if (!procurementIds.has(pid)) {
-        throw new Error(`Entity type "${typeId}" references unknown procurement process "${pid}"`);
-      }
+      if (!procurementIds.has(pid)) throw new Error(`Entity type "${typeId}" references unknown procurement process "${pid}"`);
     }
     for (const pid of entityType.processes.fulfillment) {
-      if (!fulfillmentIds.has(pid)) {
-        throw new Error(`Entity type "${typeId}" references unknown fulfillment process "${pid}"`);
-      }
+      if (!fulfillmentIds.has(pid)) throw new Error(`Entity type "${typeId}" references unknown fulfillment process "${pid}"`);
     }
   }
 
-  // Validate corridors reference valid locations
+  // Validate corridors
   for (const corridor of config.corridors) {
-    if (!locationIds.has(corridor.locationA)) {
-      throw new Error(`Corridor has unknown location "${corridor.locationA}"`);
-    }
-    if (!locationIds.has(corridor.locationB)) {
-      throw new Error(`Corridor has unknown location "${corridor.locationB}"`);
-    }
-    if (corridor.locationA === corridor.locationB) {
-      throw new Error(`Corridor cannot connect a location to itself ("${corridor.locationA}")`);
-    }
-    if (corridor.cost <= 0) {
-      throw new Error(`Corridor between "${corridor.locationA}" and "${corridor.locationB}" must have positive cost`);
-    }
+    if (!locationIds.has(corridor.locationA)) throw new Error(`Corridor has unknown location "${corridor.locationA}"`);
+    if (!locationIds.has(corridor.locationB)) throw new Error(`Corridor has unknown location "${corridor.locationB}"`);
+    if (corridor.locationA === corridor.locationB) throw new Error(`Corridor cannot connect a location to itself ("${corridor.locationA}")`);
+    if (corridor.cost <= 0) throw new Error(`Corridor between "${corridor.locationA}" and "${corridor.locationB}" must have positive cost`);
   }
 
-  // Validate corridor network connectivity (all locations reachable)
   validateCorridorConnectivity(config.locations.map((l) => l.id), config.corridors);
 
-  // Validate locations — demand cycles required for locations with demand
+  // Validate locations
   for (const location of config.locations) {
     const hasDemand = Object.values(location.demand).some((d) => d > 0);
-    if (hasDemand && !location.demandCycle) {
-      throw new Error(`Location "${location.id}" has demand but no demandCycle defined`);
-    }
+    if (hasDemand && !location.demandCycle) throw new Error(`Location "${location.id}" has demand but no demandCycle defined`);
     if (location.demandCycle) {
-      if (location.demandCycle.phases.length === 0) {
-        throw new Error(`Location "${location.id}" demandCycle must have at least one phase`);
-      }
+      if (location.demandCycle.phases.length === 0) throw new Error(`Location "${location.id}" demandCycle must have at least one phase`);
       for (const phase of location.demandCycle.phases) {
-        if (phase.ticks <= 0) {
-          throw new Error(`Location "${location.id}" demand phase "${phase.name}" must have positive ticks`);
-        }
+        if (phase.ticks <= 0) throw new Error(`Location "${location.id}" demand phase "${phase.name}" must have positive ticks`);
       }
     }
-    // Validate demand resource IDs
     for (const res of Object.keys(location.demand)) {
-      if (!resourceIds.has(res)) {
-        throw new Error(`Location "${location.id}" has unknown demand resource "${res}"`);
-      }
+      if (!resourceIds.has(res)) throw new Error(`Location "${location.id}" has unknown demand resource "${res}"`);
     }
+  }
+
+  // Validate pricing
+  for (const res of Object.keys(config.pricing.basePrices)) {
+    if (!resourceIds.has(res)) throw new Error(`Pricing basePrices has unknown resource "${res}"`);
+  }
+  for (const res of Object.keys(config.pricing.retailPrices)) {
+    if (!resourceIds.has(res)) throw new Error(`Pricing retailPrices has unknown resource "${res}"`);
+  }
+  if (config.pricing.storageCostPerUnit < 0) throw new Error('Pricing storageCostPerUnit must be non-negative');
+
+  // Validate contract settings
+  if (config.contractWaitTicks < 0) throw new Error('contractWaitTicks must be non-negative');
+  if (config.contractDefaultPenaltyRate < 0) throw new Error('contractDefaultPenaltyRate must be non-negative');
+  if (config.contractDefaultCancellationThreshold <= 0 || config.contractDefaultCancellationThreshold > 1) {
+    throw new Error('contractDefaultCancellationThreshold must be between 0 (exclusive) and 1 (inclusive)');
   }
 
   // Validate scenario entities
+  const entityIds = new Set(config.scenario.entities.map((e) => e.id));
   for (const entity of config.scenario.entities) {
-    if (!entityTypeIds.has(entity.type)) {
-      throw new Error(`Scenario entity "${entity.id}" has unknown type "${entity.type}"`);
-    }
-    if (!locationIds.has(entity.locationId)) {
-      throw new Error(`Scenario entity "${entity.id}" has unknown location "${entity.locationId}"`);
-    }
+    if (!entityTypeIds.has(entity.type)) throw new Error(`Scenario entity "${entity.id}" has unknown type "${entity.type}"`);
+    if (!locationIds.has(entity.locationId)) throw new Error(`Scenario entity "${entity.id}" has unknown location "${entity.locationId}"`);
     for (const res of Object.keys(entity.inventory)) {
-      if (!resourceIds.has(res)) {
-        throw new Error(`Scenario entity "${entity.id}" has unknown resource "${res}" in inventory`);
-      }
+      if (!resourceIds.has(res)) throw new Error(`Scenario entity "${entity.id}" has unknown resource "${res}" in inventory`);
     }
   }
-
-  // Validate default player entity exists
-  const entityIds = new Set(config.scenario.entities.map((e) => e.id));
   if (!entityIds.has(config.scenario.defaultPlayerEntity)) {
     throw new Error(`Default player entity "${config.scenario.defaultPlayerEntity}" not found in scenario`);
   }
 }
 
-/**
- * Validate that all locations are connected via the corridor network.
- * Uses BFS from the first location to ensure all are reachable.
- */
 function validateCorridorConnectivity(locationIds: string[], corridors: CorridorConfig[]): void {
   if (locationIds.length <= 1) return;
 
   const adj: Record<string, Set<string>> = {};
-  for (const id of locationIds) {
-    adj[id] = new Set();
-  }
+  for (const id of locationIds) adj[id] = new Set();
   for (const corridor of corridors) {
     adj[corridor.locationA].add(corridor.locationB);
     adj[corridor.locationB].add(corridor.locationA);
@@ -259,32 +223,21 @@ function validateCorridorConnectivity(locationIds: string[], corridors: Corridor
 // PATHFINDING
 // ============================================================================
 
-/** Build an adjacency list from corridors (bi-directional). */
 function buildAdjacencyList(corridors: CorridorConfig[]): Record<string, { neighbor: string; cost: number }[]> {
   const adj: Record<string, { neighbor: string; cost: number }[]> = {};
-
   for (const corridor of corridors) {
     if (!adj[corridor.locationA]) adj[corridor.locationA] = [];
     if (!adj[corridor.locationB]) adj[corridor.locationB] = [];
     adj[corridor.locationA].push({ neighbor: corridor.locationB, cost: corridor.cost });
     adj[corridor.locationB].push({ neighbor: corridor.locationA, cost: corridor.cost });
   }
-
   return adj;
 }
 
-/**
- * Dijkstra shortest-path over the corridor graph.
- * Returns the shortest path cost and the list of location IDs from origin to destination.
- * Cost is the sum of corridor costs only (no local transport).
- */
 export function findShortestPath(corridors: CorridorConfig[], from: string, to: string): PathResult | null {
-  if (from === to) {
-    return { cost: 0, path: [from] };
-  }
+  if (from === to) return { cost: 0, path: [from] };
 
   const adj = buildAdjacencyList(corridors);
-
   const dist: Record<string, number> = {};
   const prev: Record<string, string | null> = {};
   const visited = new Set<string>();
@@ -307,8 +260,7 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
     if (current === null || current === to) break;
     visited.add(current);
 
-    const neighbors = adj[current] ?? [];
-    for (const { neighbor, cost } of neighbors) {
+    for (const { neighbor, cost } of adj[current] ?? []) {
       if (visited.has(neighbor)) continue;
       const newDist = currentDist + cost;
       if (newDist < dist[neighbor]) {
@@ -318,9 +270,7 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
     }
   }
 
-  if (dist[to] === undefined || dist[to] === Infinity) {
-    return null;
-  }
+  if (dist[to] === undefined || dist[to] === Infinity) return null;
 
   const path: string[] = [];
   let node: string | null = to;
@@ -328,7 +278,6 @@ export function findShortestPath(corridors: CorridorConfig[], from: string, to: 
     path.unshift(node);
     node = prev[node];
   }
-
   return { cost: dist[to], path };
 }
 
@@ -341,28 +290,20 @@ let cachedPathTable: Record<string, Record<string, PathResult>> | null = null;
 function buildPathTable(config: GameConfig): Record<string, Record<string, PathResult>> {
   const table: Record<string, Record<string, PathResult>> = {};
   const locationIds = config.locations.map((l) => l.id);
-
   for (const from of locationIds) {
     table[from] = {};
     for (const to of locationIds) {
       const result = findShortestPath(config.corridors, from, to);
-      if (result) {
-        table[from][to] = result;
-      }
+      if (result) table[from][to] = result;
     }
   }
-
   return table;
 }
 
 function getPath(config: GameConfig, from: string, to: string): PathResult {
-  if (!cachedPathTable) {
-    cachedPathTable = buildPathTable(config);
-  }
+  if (!cachedPathTable) cachedPathTable = buildPathTable(config);
   const result = cachedPathTable[from]?.[to];
-  if (!result) {
-    throw new Error(`No path from "${from}" to "${to}"`);
-  }
+  if (!result) throw new Error(`No path from "${from}" to "${to}"`);
   return result;
 }
 
@@ -370,52 +311,28 @@ function getPath(config: GameConfig, from: string, to: string): PathResult {
 // TRANSPORT TIME
 // ============================================================================
 
-/**
- * Get transport time between two locations.
- * Total = local(from) + corridor path cost + local(to).
- * For same-location: just local transport ticks (once).
- */
-export function getTransportTime(
-  config: GameConfig,
-  fromLocationId: string,
-  toLocationId: string
-): number {
+export function getTransportTime(config: GameConfig, fromLocationId: string, toLocationId: string): number {
   const fromLocation = config.locations.find((l) => l.id === fromLocationId);
   const toLocation = config.locations.find((l) => l.id === toLocationId);
+  if (!fromLocation || !toLocation) throw new Error(`Unknown location: ${fromLocationId} or ${toLocationId}`);
 
-  if (!fromLocation || !toLocation) {
-    throw new Error(`Unknown location: ${fromLocationId} or ${toLocationId}`);
-  }
-
-  if (fromLocationId === toLocationId) {
-    return fromLocation.localTransportTicks;
-  }
+  if (fromLocationId === toLocationId) return fromLocation.localTransportTicks;
 
   const pathResult = getPath(config, fromLocationId, toLocationId);
   return fromLocation.localTransportTicks + pathResult.cost + toLocation.localTransportTicks;
 }
 
-/**
- * Get the full transport route between two locations.
- * Returns total time and the path (list of location IDs).
- */
 export function getTransportRoute(
   config: GameConfig,
   fromLocationId: string,
-  toLocationId: string
+  toLocationId: string,
 ): { totalTime: number; route: string[] } {
   const fromLocation = config.locations.find((l) => l.id === fromLocationId);
   const toLocation = config.locations.find((l) => l.id === toLocationId);
-
-  if (!fromLocation || !toLocation) {
-    throw new Error(`Unknown location: ${fromLocationId} or ${toLocationId}`);
-  }
+  if (!fromLocation || !toLocation) throw new Error(`Unknown location: ${fromLocationId} or ${toLocationId}`);
 
   if (fromLocationId === toLocationId) {
-    return {
-      totalTime: fromLocation.localTransportTicks,
-      route: [fromLocationId],
-    };
+    return { totalTime: fromLocation.localTransportTicks, route: [fromLocationId] };
   }
 
   const pathResult = getPath(config, fromLocationId, toLocationId);
@@ -429,67 +346,85 @@ export function getTransportRoute(
 // ACCESSORS
 // ============================================================================
 
-/** Get entity type config for an entity */
 export function getEntityType(config: GameConfig, entity: { type: string }): EntityTypeConfig {
   const entityType = config.entityTypes[entity.type];
-  if (!entityType) {
-    throw new Error(`Unknown entity type: ${entity.type}`);
-  }
+  if (!entityType) throw new Error(`Unknown entity type: ${entity.type}`);
   return entityType;
 }
 
-/** Get production process definition by ID */
 export function getProductionProcess(config: GameConfig, processId: string): ProductionProcess {
   const process = config.processes.production.find((p) => p.id === processId);
-  if (!process) {
-    throw new Error(`Unknown production process: ${processId}`);
-  }
+  if (!process) throw new Error(`Unknown production process: ${processId}`);
   return process;
 }
 
-/** Get retail process definition by ID */
 export function getRetailProcess(config: GameConfig, processId: string): RetailProcess {
   const process = config.processes.retail.find((p) => p.id === processId);
-  if (!process) {
-    throw new Error(`Unknown retail process: ${processId}`);
-  }
+  if (!process) throw new Error(`Unknown retail process: ${processId}`);
   return process;
 }
 
-/** Get procurement process definition by ID */
 export function getProcurementProcess(config: GameConfig, processId: string): ProcurementProcess {
   const process = config.processes.procurement.find((p) => p.id === processId);
-  if (!process) {
-    throw new Error(`Unknown procurement process: ${processId}`);
-  }
+  if (!process) throw new Error(`Unknown procurement process: ${processId}`);
   return process;
 }
 
-/** Get fulfillment process definition by ID */
 export function getFulfillmentProcess(config: GameConfig, processId: string): FulfillmentProcess {
   const process = config.processes.fulfillment.find((p) => p.id === processId);
-  if (!process) {
-    throw new Error(`Unknown fulfillment process: ${processId}`);
-  }
+  if (!process) throw new Error(`Unknown fulfillment process: ${processId}`);
   return process;
 }
 
-/** Get location config by ID */
 export function getLocation(config: GameConfig, locationId: string): LocationConfig {
   const location = config.locations.find((l) => l.id === locationId);
-  if (!location) {
-    throw new Error(`Unknown location: ${locationId}`);
-  }
+  if (!location) throw new Error(`Unknown location: ${locationId}`);
   return location;
 }
 
-/** Get resource config by ID */
 export function getResource(config: GameConfig, resourceId: string) {
   const resource = config.resources.find((r) => r.id === resourceId);
-  if (!resource) {
-    throw new Error(`Unknown resource: ${resourceId}`);
-  }
+  if (!resource) throw new Error(`Unknown resource: ${resourceId}`);
   return resource;
+}
+
+/**
+ * Calculate the production cost per output unit for a production process.
+ * Cost = sum of (cycleInput quantities * basePrices + tickInput quantities * cycleTicks * basePrices) / total output quantity.
+ * Returns 0 for processes with no inputs (e.g. mining).
+ */
+export function getProductionCostPerUnit(config: GameConfig, processId: string): number {
+  const process = getProductionProcess(config, processId);
+
+  let totalInputCost = 0;
+  for (const input of process.cycleInputs) {
+    totalInputCost += input.quantity * (config.pricing.basePrices[input.resource] ?? 0);
+  }
+  for (const input of process.tickInputs) {
+    totalInputCost += input.quantity * process.cycleTicks * (config.pricing.basePrices[input.resource] ?? 0);
+  }
+
+  let totalOutputUnits = 0;
+  for (const output of process.outputs) {
+    totalOutputUnits += output.quantity;
+  }
+
+  if (totalOutputUnits === 0) return 0;
+  return totalInputCost / totalOutputUnits;
+}
+
+/**
+ * Get the base wholesale price for a resource.
+ */
+export function getBasePrice(config: GameConfig, resource: string): number {
+  return config.pricing.basePrices[resource] ?? 0;
+}
+
+/**
+ * Get the retail price for a resource.
+ */
+export function getRetailPrice(config: GameConfig, resource: string): number {
+  return config.pricing.retailPrices[resource] ?? config.pricing.basePrices[resource] ?? 0;
 }
 
 // ============================================================================
@@ -499,13 +434,10 @@ export function getResource(config: GameConfig, resourceId: string) {
 let cachedConfig: GameConfig | null = null;
 
 export function getGameConfig(): GameConfig {
-  if (!cachedConfig) {
-    cachedConfig = loadGameConfig();
-  }
+  if (!cachedConfig) cachedConfig = loadGameConfig();
   return cachedConfig;
 }
 
-/** Reset cached config and path table (useful for testing) */
 export function resetConfigCache(): void {
   cachedConfig = null;
   cachedPathTable = null;

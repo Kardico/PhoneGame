@@ -1,19 +1,17 @@
 /**
- * AI module index — re-exports all AI decision functions.
+ * AI module barrel exports.
  *
- * Architecture:
- * - productionAI: start/stop production lines
- * - procurementAI: order resources from suppliers
- * - fulfillmentAI: accept/decline/prioritize incoming orders
- *
- * Each module has tweakable parameters at the top that can be adjusted
- * to change AI behavior without modifying decision logic.
+ * Import all AI decision-making functions from this single entry point.
  */
 
+// Production decisions
 export { decideProduction } from './productionAI';
-export type { ProductionDecision } from './productionAI';
 
+// Procurement (spot order) decisions
 export { decideProcurement } from './procurementAI';
-export type { ProcurementDecision } from './procurementAI';
 
+// Fulfillment (order acceptance) logic
 export { sortOrdersByPriority, decideOrderFulfillment } from './fulfillmentAI';
+
+// Contract AI (proposals + evaluation)
+export { proposeContracts, evaluateContractProposals, getOrderBook } from './contractAI';

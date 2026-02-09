@@ -2,14 +2,17 @@
  * Core tick processor for the supply chain simulation.
  *
  * Each tick (in order):
- * 1. Increment tick counter
- * 2. ARRIVALS — Complete deliveries with ticksRemaining <= 0 (add stock to buyers)
- * 3. Advance demand phases (per-location)
- * 4. Process production lines (startup, progress, cycle completion)
- * 5. Retail selling (entities with retail processes sell to consumers)
- * 6. Entity decisions — AI starts/stops lines + AI/player place orders (status = 'pending')
- * 7. ACCEPT ORDERS — Sellers accept/decline pending orders (commit stock)
- * 8. DEPARTURES — Accepted orders ship: deduct inventory & committed, create deliveries
+ *  1. Increment tick counter
+ *  2. ARRIVALS — Complete deliveries (add stock, transfer payment buyer -> seller)
+ *  3. Advance demand phases (per-location)
+ *  4. Process production lines (startup, progress, cycle completion)
+ *  5. Retail selling (entities with retail processes sell to consumers, earn revenue)
+ *  6. Storage costs (deduct per-unit inventory costs from each entity)
+ *  7. Entity decisions — AI starts/stops lines, AI/player place orders
+ *  8. Contract management — AI proposes contracts, mature proposals evaluated, due deliveries processed
+ *  9. ACCEPT ORDERS — Sellers accept/decline pending orders (commit stock, pricing check)
+ * 10. DEPARTURES — Accepted orders ship: deduct inventory & committed, create deliveries
+ * 11. Contract status update — check completion & cancellation
  */
 
 import type {
@@ -18,6 +21,7 @@ import type {
   ProcessLine,
   Delivery,
   Order,
+  Contract,
   PlayerOrder,
   GameConfig,
   DemandPhaseState,
@@ -31,8 +35,10 @@ import {
   getEntityType,
   getProductionProcess,
   getLocation,
+  getBasePrice,
+  getRetailPrice,
 } from './configLoader';
-import { decideProduction, decideProcurement } from './ai';
+import { decideProduction, decideProcurement, proposeContracts, evaluateContractProposals } from './ai';
 import { sortOrdersByPriority, decideOrderFulfillment } from './ai';
 
 // ============================================================================
@@ -50,10 +56,7 @@ function getEntity(state: GameState, id: string): Entity | undefined {
 }
 
 function updateEntity(state: GameState, id: string, updater: (e: Entity) => Entity): GameState {
-  return {
-    ...state,
-    entities: state.entities.map((e) => (e.id === id ? updater(e) : e)),
-  };
+  return { ...state, entities: state.entities.map((e) => (e.id === id ? updater(e) : e)) };
 }
 
 function addToInventory(state: GameState, entityId: string, resource: string, quantity: number): GameState {
@@ -77,12 +80,10 @@ function removeFromInventory(state: GameState, entityId: string, resource: strin
   }));
 }
 
-/** Get available stock: inventory minus committed */
 function getAvailable(entity: Entity, resource: string): number {
   return (entity.inventory[resource] ?? 0) - (entity.committed[resource] ?? 0);
 }
 
-/** Add to committed stock */
 function addCommitted(state: GameState, entityId: string, resource: string, quantity: number): GameState {
   const entity = getEntity(state, entityId);
   if (!entity) return state;
@@ -93,24 +94,56 @@ function addCommitted(state: GameState, entityId: string, resource: string, quan
   }));
 }
 
-/** Remove from committed stock */
 function removeCommitted(state: GameState, entityId: string, resource: string, quantity: number): GameState {
   const entity = getEntity(state, entityId);
   if (!entity) return state;
   const current = entity.committed[resource] ?? 0;
   const newValue = Math.max(0, current - quantity);
   const newCommitted: Inventory = { ...entity.committed, [resource]: newValue };
-  if (newValue === 0) {
-    delete newCommitted[resource];
+  if (newValue === 0) delete newCommitted[resource];
+  return updateEntity(state, entityId, (e) => ({ ...e, committed: newCommitted }));
+}
+
+/** Transfer money from one entity to another */
+function transferMoney(state: GameState, fromEntityId: string, toEntityId: string, amount: number): GameState {
+  if (amount <= 0) return state;
+
+  let nextState = state;
+  const from = getEntity(nextState, fromEntityId);
+  const to = getEntity(nextState, toEntityId);
+  if (!from || !to) return state;
+
+  nextState = updateEntity(nextState, fromEntityId, (e) => ({ ...e, money: e.money - amount }));
+  nextState = updateEntity(nextState, toEntityId, (e) => ({ ...e, money: e.money + amount }));
+
+  // Log if sender goes negative
+  const updatedFrom = getEntity(nextState, fromEntityId);
+  if (updatedFrom && updatedFrom.money < 0) {
+    console.warn(`[Money] ${updatedFrom.name} has negative balance: $${updatedFrom.money.toFixed(2)}`);
   }
-  return updateEntity(state, entityId, (e) => ({
-    ...e,
-    committed: newCommitted,
-  }));
+
+  return nextState;
+}
+
+/** Deduct money from an entity (for costs) */
+function deductMoney(state: GameState, entityId: string, amount: number): GameState {
+  if (amount <= 0) return state;
+  let nextState = updateEntity(state, entityId, (e) => ({ ...e, money: e.money - amount }));
+  const entity = getEntity(nextState, entityId);
+  if (entity && entity.money < 0) {
+    console.warn(`[Money] ${entity.name} has negative balance: $${entity.money.toFixed(2)}`);
+  }
+  return nextState;
+}
+
+/** Add money to an entity (for revenue) */
+function addMoney(state: GameState, entityId: string, amount: number): GameState {
+  if (amount <= 0) return state;
+  return updateEntity(state, entityId, (e) => ({ ...e, money: e.money + amount }));
 }
 
 // ============================================================================
-// PHASE 1: ARRIVALS
+// PHASE 2: ARRIVALS (with money transfer)
 // ============================================================================
 
 function processArrivals(state: GameState): GameState {
@@ -120,8 +153,16 @@ function processArrivals(state: GameState): GameState {
 
   for (const delivery of state.deliveries) {
     if (delivery.ticksRemaining <= 0) {
+      // Add stock to buyer
       nextState = addToInventory(nextState, delivery.toEntityId, delivery.resource, delivery.quantity);
 
+      // Transfer payment: buyer pays seller
+      const paymentAmount = delivery.quantity * delivery.pricePerUnit;
+      if (paymentAmount > 0) {
+        nextState = transferMoney(nextState, delivery.toEntityId, delivery.fromEntityId, paymentAmount);
+      }
+
+      // Update order status
       const orderIndex = updatedOrders.findIndex((o) => o.id === delivery.orderId);
       if (orderIndex !== -1) {
         updatedOrders[orderIndex] = {
@@ -139,12 +180,9 @@ function processArrivals(state: GameState): GameState {
 }
 
 // ============================================================================
-// PHASE 2: DEMAND PHASES (per-location)
+// PHASE 3: DEMAND PHASES (per-location)
 // ============================================================================
 
-/**
- * Advance each location's demand phase independently.
- */
 function advanceDemandPhases(state: GameState, config: GameConfig): GameState {
   const updatedPhases: Record<string, DemandPhaseState> = {};
 
@@ -174,14 +212,10 @@ function advanceDemandPhases(state: GameState, config: GameConfig): GameState {
   return { ...state, demandPhases: { ...state.demandPhases, ...updatedPhases } };
 }
 
-/**
- * Get demand for a specific resource at a specific location.
- */
 function getCurrentDemand(state: GameState, config: GameConfig, locationId: string, resource: string): number {
   const location = getLocation(config, locationId);
   const baseDemand = location.demand[resource] ?? 0;
   if (baseDemand === 0) return 0;
-
   if (!location.demandCycle) return baseDemand;
 
   const phaseState = state.demandPhases[locationId];
@@ -193,13 +227,9 @@ function getCurrentDemand(state: GameState, config: GameConfig, locationId: stri
   const demand = baseDemand * phase.multiplier;
   const variance = location.demandCycle.variance;
   const randomFactor = 1 + (Math.random() * 2 - 1) * variance;
-
   return Math.max(0, Math.floor(demand * randomFactor));
 }
 
-/**
- * Get the current demand phase name for a location.
- */
 export function getLocationPhaseName(state: GameState, config: GameConfig, locationId: string): string | null {
   const location = getLocation(config, locationId);
   if (!location.demandCycle) return null;
@@ -208,9 +238,6 @@ export function getLocationPhaseName(state: GameState, config: GameConfig, locat
   return location.demandCycle.phases[phaseState.phaseIndex]?.name ?? null;
 }
 
-/**
- * Get demand phase progress for a location.
- */
 export function getLocationPhaseProgress(
   state: GameState,
   config: GameConfig,
@@ -226,14 +253,9 @@ export function getLocationPhaseProgress(
 }
 
 // ============================================================================
-// PHASE 3: PROCESS LINES (CONTINUOUS PRODUCTION)
+// PHASE 4: PROCESS LINES (CONTINUOUS PRODUCTION)
 // ============================================================================
 
-/**
- * Advance all active process lines.
- * - Starting lines: consume startup inputs (fixed, not scaled), decrement startup ticks.
- * - Running lines: consume tick inputs, advance progress, produce on cycle completion.
- */
 function processProductionLines(state: GameState, config: GameConfig): GameState {
   let nextState = state;
   const updatedLines: ProcessLine[] = [];
@@ -247,7 +269,6 @@ function processProductionLines(state: GameState, config: GameConfig): GameState
 
     // --- STARTUP PHASE ---
     if (updatedLine.phase === 'starting') {
-      // On first tick of startup (full startupTicks remaining), consume startup inputs (NOT scaled)
       if (updatedLine.startupTicksRemaining === process.startupTicks && process.startupInputs.length > 0) {
         let canConsumeStartup = true;
         for (const input of process.startupInputs) {
@@ -257,14 +278,10 @@ function processProductionLines(state: GameState, config: GameConfig): GameState
             break;
           }
         }
-
         if (!canConsumeStartup) {
-          // Can't start — keep line waiting but don't progress
           updatedLines.push(updatedLine);
           continue;
         }
-
-        // Consume startup inputs (fixed quantity, NOT scaled by volume)
         for (const input of process.startupInputs) {
           const consumed = removeFromInventory(nextState, line.entityId, input.resource, input.quantity);
           if (consumed) nextState = consumed;
@@ -281,8 +298,6 @@ function processProductionLines(state: GameState, config: GameConfig): GameState
     }
 
     // --- RUNNING PHASE ---
-
-    // At the start of a new cycle (progress === 0): consume cycle inputs (scaled by volume)
     if (updatedLine.progress === 0 && process.cycleInputs.length > 0) {
       let canConsumeCycleInputs = true;
       for (const input of process.cycleInputs) {
@@ -293,19 +308,16 @@ function processProductionLines(state: GameState, config: GameConfig): GameState
           break;
         }
       }
-
       if (!canConsumeCycleInputs) {
         updatedLines.push(updatedLine);
         continue;
       }
-
       for (const input of process.cycleInputs) {
         const consumed = removeFromInventory(nextState, line.entityId, input.resource, input.quantity * updatedLine.volume);
         if (consumed) nextState = consumed;
       }
     }
 
-    // Consume tick inputs (every tick, scaled by volume)
     if (process.tickInputs.length > 0) {
       let canConsumeTickInputs = true;
       for (const input of process.tickInputs) {
@@ -316,22 +328,18 @@ function processProductionLines(state: GameState, config: GameConfig): GameState
           break;
         }
       }
-
       if (!canConsumeTickInputs) {
         updatedLines.push(updatedLine);
         continue;
       }
-
       for (const input of process.tickInputs) {
         const consumed = removeFromInventory(nextState, line.entityId, input.resource, input.quantity * updatedLine.volume);
         if (consumed) nextState = consumed;
       }
     }
 
-    // Advance progress
     updatedLine.progress += 1;
 
-    // Check if cycle complete
     if (updatedLine.progress >= process.cycleTicks) {
       for (const output of process.outputs) {
         nextState = addToInventory(nextState, line.entityId, output.resource, output.quantity * updatedLine.volume);
@@ -346,20 +354,14 @@ function processProductionLines(state: GameState, config: GameConfig): GameState
 }
 
 // ============================================================================
-// PHASE 4: RETAIL SELLING
+// PHASE 5: RETAIL SELLING (with revenue)
 // ============================================================================
 
-/**
- * Process retail sales for entities with retail processes.
- * Uses per-resource, per-location demand from config.
- */
 function processRetailSelling(state: GameState, config: GameConfig): GameState {
   let nextState = state;
 
   for (const entity of nextState.entities) {
     const entityType = getEntityType(config, entity);
-
-    // Only entities with retail processes sell to consumers
     if (entityType.processes.retail.length === 0) continue;
 
     for (const retailProcessId of entityType.processes.retail) {
@@ -368,17 +370,19 @@ function processRetailSelling(state: GameState, config: GameConfig): GameState {
 
       const resource = retailProcess.resource;
       const demand = getCurrentDemand(nextState, config, entity.locationId, resource);
-      const stock = entity.inventory[resource] ?? 0;
       const available = getAvailable(entity, resource);
-      const canSell = Math.min(available, stock);
-      const sold = Math.min(canSell, demand);
+      const sold = Math.min(available, demand);
       const lostSales = Math.max(0, demand - sold);
 
       if (sold > 0) {
         nextState = removeFromInventory(nextState, entity.id, resource, sold) ?? nextState;
+
+        // Retailer earns revenue at retail price
+        const revenue = sold * getRetailPrice(config, resource);
+        nextState = addMoney(nextState, entity.id, revenue);
       }
 
-      // Update per-entity, per-resource sales stats
+      // Update sales stats
       const entitySales = nextState.sales[entity.id] ?? {};
       const currentStats: ResourceSalesStats = entitySales[resource] ?? { totalSold: 0, totalDemand: 0, lostSales: 0 };
 
@@ -403,18 +407,37 @@ function processRetailSelling(state: GameState, config: GameConfig): GameState {
 }
 
 // ============================================================================
-// PHASE 5: SUPPLIER SELECTION
+// PHASE 6: STORAGE COSTS
 // ============================================================================
 
-/**
- * Find the best supplier for a resource from an entity's suppliers list.
- * Uses available stock (inventory - committed) to avoid double-promising.
- */
+function processStorageCosts(state: GameState, config: GameConfig): GameState {
+  let nextState = state;
+  const costPerUnit = config.pricing.storageCostPerUnit;
+  if (costPerUnit <= 0) return nextState;
+
+  for (const entity of nextState.entities) {
+    let totalUnits = 0;
+    for (const qty of Object.values(entity.inventory)) {
+      totalUnits += qty;
+    }
+    if (totalUnits > 0) {
+      const cost = totalUnits * costPerUnit;
+      nextState = deductMoney(nextState, entity.id, cost);
+    }
+  }
+
+  return nextState;
+}
+
+// ============================================================================
+// PHASE 7: SUPPLIER SELECTION
+// ============================================================================
+
 function findBestSupplier(
   state: GameState,
   config: GameConfig,
   buyerEntityId: string,
-  resource: string
+  resource: string,
 ): Entity | null {
   const buyer = getEntity(state, buyerEntityId);
   if (!buyer) return null;
@@ -433,7 +456,7 @@ function findBestSupplier(
     .filter((c): c is NonNullable<typeof c> => c !== null && c.available > 0);
 
   if (candidates.length === 0) {
-    const firstSupplier = getEntity(state, supplierIds[0]);
+    const firstSupplier = supplierIds.length > 0 ? getEntity(state, supplierIds[0]) : null;
     return firstSupplier ?? null;
   }
 
@@ -445,14 +468,11 @@ function findBestSupplier(
   return candidates[0].supplier;
 }
 
-/**
- * Get all available suppliers for a resource with their details.
- */
 export function getSuppliersForResource(
   state: GameState,
   config: GameConfig,
   buyerEntityId: string,
-  resource: string
+  resource: string,
 ): { entityId: string; entityName: string; availableStock: number; transportTime: number }[] {
   const buyer = getEntity(state, buyerEntityId);
   if (!buyer) return [];
@@ -474,7 +494,7 @@ export function getSuppliersForResource(
 }
 
 // ============================================================================
-// PHASE 6: ORDER PLACEMENT
+// ORDER PLACEMENT
 // ============================================================================
 
 function placePendingOrder(
@@ -483,7 +503,9 @@ function placePendingOrder(
   buyerEntityId: string,
   resource: string,
   requestedQuantity: number,
-  supplierId?: string
+  pricePerUnit: number,
+  supplierId?: string,
+  contractId?: string,
 ): GameState {
   const buyer = getEntity(state, buyerEntityId);
   if (!buyer) return state;
@@ -495,16 +517,13 @@ function placePendingOrder(
       seller = getEntity(state, supplierId) ?? null;
     }
   }
-
   if (!seller) {
     seller = findBestSupplier(state, config, buyerEntityId, resource);
   }
-
   if (!seller) return state;
 
-  const orderId = nextId('order');
   const order: Order = {
-    id: orderId,
+    id: nextId('order'),
     placedAtTick: state.tick,
     buyerEntityId,
     sellerEntityId: seller.id,
@@ -513,41 +532,33 @@ function placePendingOrder(
     fulfilledQuantity: 0,
     wasAmended: false,
     status: 'pending',
+    pricePerUnit,
+    contractId,
   };
 
-  return {
-    ...state,
-    orders: [...state.orders, order],
-  };
+  return { ...state, orders: [...state.orders, order] };
 }
 
 // ============================================================================
-// PHASE 7: ORDER ACCEPTANCE
+// ORDER ACCEPTANCE (with pricing)
 // ============================================================================
 
 function processOrderAcceptance(state: GameState, config: GameConfig): GameState {
   let nextState = state;
   const updatedOrders = [...nextState.orders];
 
-  // Gather pending orders
   const pendingIndices: number[] = [];
   for (let i = 0; i < updatedOrders.length; i++) {
-    if (updatedOrders[i].status === 'pending') {
-      pendingIndices.push(i);
-    }
+    if (updatedOrders[i].status === 'pending') pendingIndices.push(i);
   }
 
-  // Group by seller
   const ordersBySeller: Record<string, number[]> = {};
   for (const idx of pendingIndices) {
     const order = updatedOrders[idx];
-    if (!ordersBySeller[order.sellerEntityId]) {
-      ordersBySeller[order.sellerEntityId] = [];
-    }
+    if (!ordersBySeller[order.sellerEntityId]) ordersBySeller[order.sellerEntityId] = [];
     ordersBySeller[order.sellerEntityId].push(idx);
   }
 
-  // For each seller, use fulfillment AI to sort and accept/decline
   for (const [sellerId, orderIndices] of Object.entries(ordersBySeller)) {
     const seller = getEntity(nextState, sellerId);
     if (!seller) {
@@ -557,15 +568,12 @@ function processOrderAcceptance(state: GameState, config: GameConfig): GameState
       continue;
     }
 
-    // Use fulfillment AI to determine priority
     const sortedIndices = sortOrdersByPriority(seller, orderIndices, updatedOrders, nextState, config);
 
-    // Accept orders in priority order until stock runs out
     for (const idx of sortedIndices) {
       const order = updatedOrders[idx];
       const available = getAvailable(getEntity(nextState, sellerId)!, order.resource);
-
-      const fulfilledQuantity = decideOrderFulfillment(seller, order, available, order.requestedQuantity);
+      const fulfilledQuantity = decideOrderFulfillment(seller, order, available, order.requestedQuantity, config);
 
       if (fulfilledQuantity <= 0) {
         updatedOrders[idx] = { ...order, status: 'declined', fulfilledQuantity: 0 };
@@ -573,13 +581,7 @@ function processOrderAcceptance(state: GameState, config: GameConfig): GameState
       }
 
       const wasAmended = fulfilledQuantity < order.requestedQuantity;
-      updatedOrders[idx] = {
-        ...order,
-        status: 'accepted',
-        fulfilledQuantity,
-        wasAmended,
-      };
-
+      updatedOrders[idx] = { ...order, status: 'accepted', fulfilledQuantity, wasAmended };
       nextState = addCommitted(nextState, sellerId, order.resource, fulfilledQuantity);
     }
   }
@@ -588,7 +590,7 @@ function processOrderAcceptance(state: GameState, config: GameConfig): GameState
 }
 
 // ============================================================================
-// PHASE 8: DEPARTURES
+// DEPARTURES
 // ============================================================================
 
 function processDepartures(state: GameState, config: GameConfig): GameState {
@@ -613,7 +615,6 @@ function processDepartures(state: GameState, config: GameConfig): GameState {
       continue;
     }
     nextState = deducted;
-
     nextState = removeCommitted(nextState, seller.id, order.resource, order.fulfilledQuantity);
 
     const { totalTime, route } = getTransportRoute(config, seller.locationId, buyer.locationId);
@@ -627,6 +628,7 @@ function processDepartures(state: GameState, config: GameConfig): GameState {
       quantity: order.fulfilledQuantity,
       ticksRemaining: totalTime,
       route,
+      pricePerUnit: order.pricePerUnit,
     };
 
     newDeliveries.push(delivery);
@@ -637,7 +639,7 @@ function processDepartures(state: GameState, config: GameConfig): GameState {
 }
 
 // ============================================================================
-// AI DECISIONS (delegates to AI modules)
+// AI DECISIONS (production + procurement spot orders)
 // ============================================================================
 
 function processAIDecisions(state: GameState, config: GameConfig): GameState {
@@ -654,13 +656,11 @@ function processAIDecisions(state: GameState, config: GameConfig): GameState {
     if (entityType.processes.production.length > 0) {
       const prodDecision = decideProduction(entity, entityType, entityLines, nextState, config);
 
-      // Stop lines
       for (const lineId of prodDecision.linesToStop) {
         const idx = newLines.findIndex((l) => l.id === lineId);
         if (idx !== -1) newLines.splice(idx, 1);
       }
 
-      // Start lines
       for (const toStart of prodDecision.linesToStart) {
         const currentCount = newLines.filter((l) => l.entityId === entity.id).length;
         if (currentCount >= entityType.maxProcessLines) break;
@@ -678,7 +678,7 @@ function processAIDecisions(state: GameState, config: GameConfig): GameState {
       }
     }
 
-    // --- Procurement decisions ---
+    // --- Procurement spot orders ---
     if (entityType.processes.procurement.length > 0) {
       const procDecision = decideProcurement(entity, entityType, nextState, config);
 
@@ -689,6 +689,7 @@ function processAIDecisions(state: GameState, config: GameConfig): GameState {
           entity.id,
           order.resource,
           order.quantity,
+          order.pricePerUnit,
           order.supplierId,
         );
       }
@@ -699,57 +700,308 @@ function processAIDecisions(state: GameState, config: GameConfig): GameState {
 }
 
 // ============================================================================
-// PLAYER ORDERS
+// CONTRACT MANAGEMENT
 // ============================================================================
 
-function processPlayerOrder(state: GameState, config: GameConfig, playerAction: PlayerOrder): GameState {
-  const entity = getEntity(state, playerAction.entityId);
-  if (!entity || !entity.isPlayerControlled) return state;
-
+/**
+ * Phase 8: Contract management
+ * - AI entities propose new contracts
+ * - Evaluate mature proposals (seller accepts/declines)
+ * - Process due deliveries from active contracts
+ */
+function processContractManagement(state: GameState, config: GameConfig): GameState {
   let nextState = state;
+  let updatedContracts = [...nextState.contracts];
 
-  if (playerAction.action === 'start_line') {
-    const process = getProductionProcess(config, playerAction.targetId);
-    const newLines = [...nextState.processLines];
+  // --- 8a: AI entities propose new contracts ---
+  for (const entity of nextState.entities) {
+    if (entity.isPlayerControlled) continue;
 
     const entityType = getEntityType(config, entity);
-    const entityLines = newLines.filter((l) => l.entityId === entity.id);
-    if (entityLines.length >= entityType.maxProcessLines) {
-      return state;
+    if (entityType.processes.procurement.length === 0) continue;
+
+    const proposalDecision = proposeContracts(entity, entityType, nextState, config);
+
+    for (const proposal of proposalDecision.proposals) {
+      const penaltyPerUnit = proposal.pricePerUnit * config.contractDefaultPenaltyRate;
+
+      const contract: Contract = {
+        id: nextId('contract'),
+        buyerEntityId: entity.id,
+        sellerEntityId: proposal.supplierId,
+        resource: proposal.resource,
+        pricePerUnit: proposal.pricePerUnit,
+        unitsPerDelivery: proposal.unitsPerDelivery,
+        deliveryInterval: proposal.deliveryInterval,
+        totalUnits: proposal.totalUnits,
+        unitsShipped: 0,
+        unitsMissed: 0,
+        penaltyPerUnit,
+        cancellationThreshold: config.contractDefaultCancellationThreshold,
+        proposedAtTick: nextState.tick,
+        nextDeliveryTick: 0, // Will be set when accepted
+        status: 'proposed',
+      };
+
+      updatedContracts.push(contract);
+    }
+  }
+
+  nextState = { ...nextState, contracts: updatedContracts };
+
+  // --- 8b: Sellers evaluate mature proposals ---
+  const matureTick = nextState.tick - config.contractWaitTicks;
+
+  // Group mature proposals by seller
+  const proposalsBySeller = new Map<string, Contract[]>();
+  for (const contract of updatedContracts) {
+    if (contract.status !== 'proposed') continue;
+    if (contract.proposedAtTick > matureTick) continue; // Not mature yet
+
+    const existing = proposalsBySeller.get(contract.sellerEntityId) ?? [];
+    existing.push(contract);
+    proposalsBySeller.set(contract.sellerEntityId, existing);
+  }
+
+  for (const [sellerId, proposals] of proposalsBySeller) {
+    const seller = getEntity(nextState, sellerId);
+    if (!seller) {
+      // No seller, decline all
+      for (const p of proposals) {
+        const idx = updatedContracts.findIndex((c) => c.id === p.id);
+        if (idx !== -1) updatedContracts[idx] = { ...updatedContracts[idx], status: 'cancelled' };
+      }
+      continue;
     }
 
-    const volume = Math.max(process.minVolume, Math.min(process.maxVolume, playerAction.quantity || process.minVolume));
+    // Skip evaluation for player-controlled sellers — they must manually accept
+    if (seller.isPlayerControlled) continue;
 
-    newLines.push({
-      id: nextId('line'),
-      processId: process.id,
-      entityId: entity.id,
-      phase: process.startupTicks > 0 ? 'starting' : 'running',
-      startupTicksRemaining: process.startupTicks,
-      progress: 0,
-      volume,
-    });
+    const entityType = getEntityType(config, seller);
+    const evalResult = evaluateContractProposals(seller, entityType, proposals, nextState, config);
 
-    nextState = { ...nextState, processLines: newLines };
-  } else if (playerAction.action === 'stop_line') {
-    const lineId = playerAction.lineId ?? playerAction.targetId;
-    nextState = {
-      ...nextState,
-      processLines: nextState.processLines.filter((l) => l.id !== lineId),
-    };
-  } else if (playerAction.action === 'order') {
-    const resource = playerAction.targetId;
-    const supplierIds = entity.suppliers[resource] ?? [];
+    for (const contractId of evalResult.accept) {
+      const idx = updatedContracts.findIndex((c) => c.id === contractId);
+      if (idx !== -1) {
+        updatedContracts[idx] = {
+          ...updatedContracts[idx],
+          status: 'active',
+          acceptedAtTick: nextState.tick,
+          nextDeliveryTick: nextState.tick + updatedContracts[idx].deliveryInterval,
+        };
+      }
+    }
 
-    if (supplierIds.length > 0) {
+    for (const contractId of evalResult.decline) {
+      const idx = updatedContracts.findIndex((c) => c.id === contractId);
+      if (idx !== -1) {
+        updatedContracts[idx] = { ...updatedContracts[idx], status: 'cancelled' };
+      }
+    }
+  }
+
+  nextState = { ...nextState, contracts: updatedContracts };
+
+  // --- 8c: Process due deliveries from active contracts ---
+  for (let i = 0; i < updatedContracts.length; i++) {
+    const contract = updatedContracts[i];
+    if (contract.status !== 'active') continue;
+    if (contract.nextDeliveryTick > nextState.tick) continue;
+
+    const seller = getEntity(nextState, contract.sellerEntityId);
+    if (!seller) {
+      // Seller gone — cancel contract
+      updatedContracts[i] = { ...contract, status: 'cancelled' };
+      continue;
+    }
+
+    const available = getAvailable(seller, contract.resource);
+    const deliveryQty = Math.min(contract.unitsPerDelivery, contract.totalUnits - contract.unitsShipped - contract.unitsMissed);
+
+    if (deliveryQty <= 0) {
+      // Contract fully processed
+      updatedContracts[i] = { ...contract, status: 'completed' };
+      continue;
+    }
+
+    if (available >= deliveryQty) {
+      // Seller has stock — create an auto-accepted order for this contract delivery
       nextState = placePendingOrder(
         nextState,
         config,
-        entity.id,
-        resource,
-        playerAction.quantity,
-        playerAction.supplierId
+        contract.buyerEntityId,
+        contract.resource,
+        deliveryQty,
+        contract.pricePerUnit,
+        contract.sellerEntityId,
+        contract.id,
       );
+
+      updatedContracts[i] = {
+        ...contract,
+        unitsShipped: contract.unitsShipped + deliveryQty,
+        nextDeliveryTick: contract.nextDeliveryTick + contract.deliveryInterval,
+      };
+    } else {
+      // Seller cannot deliver — missed
+      const penalty = deliveryQty * contract.penaltyPerUnit;
+      nextState = deductMoney(nextState, contract.sellerEntityId, penalty);
+
+      updatedContracts[i] = {
+        ...contract,
+        unitsMissed: contract.unitsMissed + deliveryQty,
+        nextDeliveryTick: contract.nextDeliveryTick + contract.deliveryInterval,
+      };
+    }
+  }
+
+  nextState = { ...nextState, contracts: updatedContracts };
+  return nextState;
+}
+
+// ============================================================================
+// PHASE 11: CONTRACT STATUS UPDATE
+// ============================================================================
+
+function updateContractStatuses(state: GameState): GameState {
+  const updatedContracts = state.contracts.map((contract) => {
+    if (contract.status !== 'active') return contract;
+
+    // Check if fully delivered or missed
+    const totalProcessed = contract.unitsShipped + contract.unitsMissed;
+    if (totalProcessed >= contract.totalUnits) {
+      return { ...contract, status: 'completed' as const };
+    }
+
+    // Check cancellation threshold
+    if (contract.unitsMissed / contract.totalUnits > contract.cancellationThreshold) {
+      return { ...contract, status: 'cancelled' as const };
+    }
+
+    return contract;
+  });
+
+  return { ...state, contracts: updatedContracts };
+}
+
+// ============================================================================
+// PLAYER ORDERS (multiple per tick, including set_volume + propose_contract)
+// ============================================================================
+
+function processPlayerOrders(state: GameState, config: GameConfig, playerActions: PlayerOrder[]): GameState {
+  let nextState = state;
+
+  for (const playerAction of playerActions) {
+    const entity = getEntity(nextState, playerAction.entityId);
+    if (!entity || !entity.isPlayerControlled) continue;
+
+    if (playerAction.action === 'start_line') {
+      const process = getProductionProcess(config, playerAction.targetId);
+      const newLines = [...nextState.processLines];
+      const entityType = getEntityType(config, entity);
+      const entityLines = newLines.filter((l) => l.entityId === entity.id);
+      if (entityLines.length >= entityType.maxProcessLines) continue;
+
+      const volume = Math.max(process.minVolume, Math.min(process.maxVolume, playerAction.quantity || process.minVolume));
+
+      newLines.push({
+        id: nextId('line'),
+        processId: process.id,
+        entityId: entity.id,
+        phase: process.startupTicks > 0 ? 'starting' : 'running',
+        startupTicksRemaining: process.startupTicks,
+        progress: 0,
+        volume,
+      });
+
+      nextState = { ...nextState, processLines: newLines };
+    } else if (playerAction.action === 'stop_line') {
+      const lineId = playerAction.lineId ?? playerAction.targetId;
+      nextState = {
+        ...nextState,
+        processLines: nextState.processLines.filter((l) => l.id !== lineId),
+      };
+    } else if (playerAction.action === 'set_volume') {
+      const lineId = playerAction.lineId ?? playerAction.targetId;
+      const newVolume = playerAction.quantity;
+
+      nextState = {
+        ...nextState,
+        processLines: nextState.processLines.map((line) => {
+          if (line.id !== lineId) return line;
+          const process = getProductionProcess(config, line.processId);
+          const clamped = Math.max(process.minVolume, Math.min(process.maxVolume, newVolume));
+          return { ...line, volume: clamped };
+        }),
+      };
+    } else if (playerAction.action === 'order') {
+      const resource = playerAction.targetId;
+      const supplierIds = entity.suppliers[resource] ?? [];
+
+      if (supplierIds.length > 0) {
+        const pricePerUnit = getBasePrice(config, resource);
+        nextState = placePendingOrder(
+          nextState,
+          config,
+          entity.id,
+          resource,
+          playerAction.quantity,
+          pricePerUnit,
+          playerAction.supplierId,
+        );
+      }
+    } else if (playerAction.action === 'propose_contract') {
+      const proposal = playerAction.contractProposal;
+      if (!proposal) continue;
+
+      const penaltyPerUnit = proposal.pricePerUnit * config.contractDefaultPenaltyRate;
+
+      const contract: Contract = {
+        id: nextId('contract'),
+        buyerEntityId: entity.id,
+        sellerEntityId: proposal.supplierId,
+        resource: proposal.resource,
+        pricePerUnit: proposal.pricePerUnit,
+        unitsPerDelivery: proposal.unitsPerDelivery,
+        deliveryInterval: proposal.deliveryInterval,
+        totalUnits: proposal.totalUnits,
+        unitsShipped: 0,
+        unitsMissed: 0,
+        penaltyPerUnit,
+        cancellationThreshold: config.contractDefaultCancellationThreshold,
+        proposedAtTick: nextState.tick,
+        nextDeliveryTick: 0,
+        status: 'proposed',
+      };
+
+      nextState = { ...nextState, contracts: [...nextState.contracts, contract] };
+    } else if (playerAction.action === 'accept_contract') {
+      const contractId = playerAction.targetId;
+      nextState = {
+        ...nextState,
+        contracts: nextState.contracts.map((c) => {
+          if (c.id === contractId && c.status === 'proposed' && c.sellerEntityId === entity.id) {
+            return {
+              ...c,
+              status: 'active' as const,
+              acceptedAtTick: nextState.tick,
+              nextDeliveryTick: nextState.tick + c.deliveryInterval,
+            };
+          }
+          return c;
+        }),
+      };
+    } else if (playerAction.action === 'decline_contract') {
+      const contractId = playerAction.targetId;
+      nextState = {
+        ...nextState,
+        contracts: nextState.contracts.map((c) => {
+          if (c.id === contractId && c.status === 'proposed' && c.sellerEntityId === entity.id) {
+            return { ...c, status: 'cancelled' as const };
+          }
+          return c;
+        }),
+      };
     }
   }
 
@@ -760,37 +1012,46 @@ function processPlayerOrder(state: GameState, config: GameConfig, playerAction: 
 // MAIN TICK PROCESSOR
 // ============================================================================
 
-export function runOneTick(state: GameState, playerAction: PlayerOrder | null = null): GameState {
+export function runOneTick(state: GameState, playerActions: PlayerOrder[] = []): GameState {
   const config = getGameConfig();
 
   // 1. Increment tick
   let next: GameState = { ...state, tick: state.tick + 1 };
 
-  // 2. ARRIVALS — complete finished deliveries
+  // 2. ARRIVALS — complete finished deliveries + transfer payments
   next = processArrivals(next);
 
   // 3. Advance demand phases (per-location)
   next = advanceDemandPhases(next, config);
 
-  // 4. Process production lines (startup, progress, cycle completion)
+  // 4. Process production lines
   next = processProductionLines(next, config);
 
-  // 5. Retail selling
+  // 5. Retail selling (with revenue)
   next = processRetailSelling(next, config);
 
-  // 6a. Process player action if provided
-  if (playerAction) {
-    next = processPlayerOrder(next, config, playerAction);
+  // 6. Storage costs
+  next = processStorageCosts(next, config);
+
+  // 7a. Process player actions (multiple per tick)
+  if (playerActions.length > 0) {
+    next = processPlayerOrders(next, config, playerActions);
   }
 
-  // 6b. Process AI decisions (production + procurement)
+  // 7b. Process AI decisions (production + procurement spot orders)
   next = processAIDecisions(next, config);
 
-  // 7. Accept/decline pending orders (commit stock)
+  // 8. Contract management (proposals, evaluation, due deliveries)
+  next = processContractManagement(next, config);
+
+  // 9. Accept/decline pending orders
   next = processOrderAcceptance(next, config);
 
-  // 8. DEPARTURES — ship accepted orders, create deliveries
+  // 10. DEPARTURES — ship accepted orders
   next = processDepartures(next, config);
+
+  // 11. Contract status update (completion, cancellation)
+  next = updateContractStatuses(next);
 
   return next;
 }
@@ -799,11 +1060,11 @@ export function runOneTick(state: GameState, playerAction: PlayerOrder | null = 
 // UTILITY EXPORTS
 // ============================================================================
 
-export { getGameConfig, getTransportTime, getEntityType, getProductionProcess, getLocation };
+export { getGameConfig, getTransportTime, getEntityType, getProductionProcess, getLocation, getBasePrice, getRetailPrice };
 
 export function getOrdersForEntity(state: GameState, entityId: string): Order[] {
   return state.orders.filter(
-    (o) => o.buyerEntityId === entityId || o.sellerEntityId === entityId
+    (o) => o.buyerEntityId === entityId || o.sellerEntityId === entityId,
   );
 }
 
@@ -823,4 +1084,10 @@ export function getEntityName(state: GameState, entityId: string): string {
 
 export function getProcessLinesForEntity(state: GameState, entityId: string): ProcessLine[] {
   return state.processLines.filter((l) => l.entityId === entityId);
+}
+
+export function getContractsForEntity(state: GameState, entityId: string): Contract[] {
+  return state.contracts.filter(
+    (c) => c.buyerEntityId === entityId || c.sellerEntityId === entityId,
+  );
 }

@@ -12,7 +12,6 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
 
   const actualPlayerEntityId = playerEntityId ?? scenario.defaultPlayerEntity;
 
-  // Create entities from scenario
   const entities: Entity[] = scenario.entities.map((scenarioEntity) => ({
     id: scenarioEntity.id,
     type: scenarioEntity.type,
@@ -22,6 +21,7 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
     committed: {},
     isPlayerControlled: scenarioEntity.id === actualPlayerEntityId,
     suppliers: scenarioEntity.suppliers ?? {},
+    money: scenarioEntity.money ?? 0,
   }));
 
   // Initialize per-location demand phases
@@ -29,10 +29,7 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
   for (const location of config.locations) {
     const hasDemand = Object.values(location.demand).some((d) => d > 0);
     if (hasDemand && location.demandCycle) {
-      demandPhases[location.id] = {
-        phaseIndex: 0,
-        ticksInPhase: 0,
-      };
+      demandPhases[location.id] = { phaseIndex: 0, ticksInPhase: 0 };
     }
   }
 
@@ -45,11 +42,7 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
       for (const retailProcessId of entityType.processes.retail) {
         const retailProcess = config.processes.retail.find((p) => p.id === retailProcessId);
         if (retailProcess) {
-          sales[entity.id][retailProcess.resource] = {
-            totalSold: 0,
-            totalDemand: 0,
-            lostSales: 0,
-          };
+          sales[entity.id][retailProcess.resource] = { totalSold: 0, totalDemand: 0, lostSales: 0 };
         }
       }
     }
@@ -61,6 +54,7 @@ export function createInitialState(playerEntityId: string | null = null): GameSt
     processLines: [],
     orders: [],
     deliveries: [],
+    contracts: [],
     demandPhases,
     sales,
   };
@@ -77,13 +71,11 @@ export function getSelectableEntities(): { id: string; name: string; type: strin
   }));
 }
 
-/** Get entity type display name */
 export function getEntityTypeName(typeId: string): string {
   const config = getGameConfig();
   return config.entityTypes[typeId]?.name ?? typeId;
 }
 
-/** Get location display name */
 export function getLocationName(locationId: string): string {
   const config = getGameConfig();
   return config.locations.find((l) => l.id === locationId)?.name ?? locationId;

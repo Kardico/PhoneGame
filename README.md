@@ -1,399 +1,305 @@
 # Supply Chain Simulation — Smartphone Manufacturing
 
-A configurable, tick-based supply chain simulation. Entities mine, process, assemble, and retail smartphones through a corridor-based transport network with multi-hop routing.
+A tick-based supply chain simulation where entities extract, process, assemble, and retail smartphones. Players and AI are interchangeable — both control entities with the same actions and information.
 
 ## Architecture Overview
 
 ```
 src/
-  config/                    # JSON configuration files
-    resources.json           # Resource definitions
-    processes.json           # Process definitions (4 categories)
-    entity-types.json        # Entity type definitions (reference processes by ID)
-    locations.json           # Locations, corridors, per-location demand
-    scenario.json            # Starting entities, inventory, suppliers
-    settings.json            # Tick speed settings
-  types/
-    game.ts                  # All TypeScript interfaces
-  engine/
-    configLoader.ts          # Loads, validates, caches config; pathfinding
-    createInitialState.ts    # Initializes GameState from config
-    tickProcessor.ts         # Core tick loop (8 phases)
-    ai/
-      index.ts               # AI module barrel export
-      productionAI.ts        # Production line start/stop decisions
-      procurementAI.ts       # Ordering decisions
-      fulfillmentAI.ts       # Order acceptance priority logic
-  hooks/
-    useTickEngine.ts         # React hook: tick loop, speed control, player input
-  components/
-    TopBar.tsx               # Sticky top bar (tick, speed, controls)
-    DebugPanel.tsx           # Main game UI with entity cards
-    RoleSelect.tsx           # Entity selection screen
-    App.tsx                  # Root component
-scripts/
-  validateConfig.ts          # Standalone config validation script
+├── config/           # JSON config files (all game data)
+│   ├── resources.json
+│   ├── processes.json
+│   ├── entity-types.json
+│   ├── locations.json
+│   ├── scenario.json
+│   ├── settings.json
+│   └── pricing.json
+├── types/
+│   └── game.ts       # All TypeScript interfaces
+├── engine/
+│   ├── configLoader.ts    # Loads, validates config; pathfinding; accessors
+│   ├── tickProcessor.ts   # Core tick logic (all phases)
+│   ├── createInitialState.ts
+│   └── ai/
+│       ├── index.ts           # Barrel exports
+│       ├── productionAI.ts    # Start/stop production lines
+│       ├── procurementAI.ts   # Spot order decisions
+│       ├── fulfillmentAI.ts   # Order acceptance with pricing
+│       └── contractAI.ts      # Contract proposals + evaluation
+├── hooks/
+│   └── useTickEngine.ts   # React hook: game loop, speed, multi-action queue
+├── components/
+│   ├── App.tsx
+│   ├── TopBar.tsx         # Sticky header: tick, money, speed, controls
+│   ├── DebugPanel.tsx     # Main game UI with entity cards
+│   └── RoleSelect.tsx     # Entity selection screen
+└── index.css
 ```
 
 ## Tick Flow
 
-Each tick executes 8 phases in strict order:
+Each tick executes these phases in order:
 
-| # | Phase | Description |
-|---|-------|-------------|
-| 1 | **Increment tick** | `state.tick += 1` |
-| 2 | **Arrivals** | Deliveries with `ticksRemaining <= 0` complete: stock added to buyer. Remaining deliveries decrement. |
-| 3 | **Advance demand phases** | Each location's demand cycle advances independently. |
-| 4 | **Production** | Active process lines advance: startup countdown, tick/cycle input consumption, progress, output on cycle completion. |
-| 5 | **Retail selling** | Entities with retail processes sell to consumers based on per-location, per-resource demand. |
-| 6 | **Entity decisions** | (a) Player action processed. (b) AI decisions: production AI starts/stops lines, procurement AI places orders. All new orders have status `'pending'`. |
-| 7 | **Order acceptance** | Sellers accept/decline pending orders using fulfillment AI priority (shortest delivery time, then earliest placement). Accepted orders commit stock. |
-| 8 | **Departures** | Accepted orders ship: inventory and committed stock deducted, `Delivery` objects created with route and `ticksRemaining`. |
+1. **Increment tick** counter
+2. **Arrivals** — Complete deliveries (ticksRemaining <= 0), add stock to buyer, transfer payment (buyer -> seller)
+3. **Advance demand phases** — Per-location demand cycle progression
+4. **Production lines** — Process startup, consume inputs, advance progress, produce outputs
+5. **Retail selling** — Entities with retail processes sell to consumers at retail prices (revenue added)
+6. **Storage costs** — Deduct per-unit inventory cost from all entities
+7. **Entity decisions** — Player actions (multiple per tick) + AI production/procurement decisions
+8. **Contract management** — AI proposes contracts, sellers evaluate mature proposals, due deliveries processed
+9. **Order acceptance** — Sellers accept/decline pending orders (pricing check, commit stock)
+10. **Departures** — Ship accepted orders: deduct inventory + committed, create deliveries
+11. **Contract status** — Check completion (all units delivered) and cancellation (missed threshold exceeded)
 
-## Process Categories
+## Config Files
 
-Processes are defined in `processes.json` and grouped into four categories:
+### `resources.json`
 
-### Production
+```json
+{ "resources": [{ "id": "string", "name": "string", "icon?": "string" }] }
+```
 
-Full production lines with startup, cycle inputs, tick inputs, outputs, and volume scaling.
+### `processes.json`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique process ID |
-| `name` | `string` | Display name |
-| `startupInputs` | `ResourceAmount[]` | Consumed once when line starts (NOT scaled by volume) |
-| `cycleInputs` | `ResourceAmount[]` | Consumed at start of each cycle (scaled by volume) |
-| `tickInputs` | `ResourceAmount[]` | Consumed every tick while running (scaled by volume) |
-| `outputs` | `ResourceAmount[]` | Produced when cycle completes (scaled by volume) |
-| `cycleTicks` | `number` | Ticks per production cycle |
-| `startupTicks` | `number` | Ticks to start up a new line |
-| `minVolume` | `number` | Minimum volume (scale factor) |
-| `maxVolume` | `number` | Maximum volume (scale factor) |
+Four categories of processes:
 
-### Retail
+```json
+{
+  "production": [{
+    "id": "string",
+    "name": "string",
+    "startupInputs": [{ "resource": "string", "quantity": "number" }],
+    "cycleInputs": [{ "resource": "string", "quantity": "number" }],
+    "tickInputs": [{ "resource": "string", "quantity": "number" }],
+    "outputs": [{ "resource": "string", "quantity": "number" }],
+    "cycleTicks": "number",
+    "startupTicks": "number",
+    "minVolume": "number",
+    "maxVolume": "number"
+  }],
+  "retail": [{ "id": "string", "name": "string", "resource": "string" }],
+  "procurement": [{ "id": "string", "name": "string", "resource": "string" }],
+  "fulfillment": [{ "id": "string", "name": "string", "resource": "string" }]
+}
+```
 
-Simple processes that sell a resource to consumers at the entity's location.
+- **startupInputs**: Fixed, NOT scaled by volume. Consumed once when a line starts.
+- **cycleInputs/tickInputs/outputs**: Scaled by line volume.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique process ID |
-| `name` | `string` | Display name |
-| `resource` | `string` | Resource sold to consumers |
-
-### Procurement
-
-Declares that an entity can buy a resource from suppliers.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique process ID |
-| `name` | `string` | Display name |
-| `resource` | `string` | Resource to procure |
-
-### Fulfillment
-
-Declares that an entity can fulfill orders for a resource.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique process ID |
-| `name` | `string` | Display name |
-| `resource` | `string` | Resource fulfilled |
-
-## Entity Types (`entity-types.json`)
-
-Each entity type references processes by ID:
+### `entity-types.json`
 
 ```json
 {
   "entityTypes": {
-    "assembler": {
-      "name": "Assembler",
-      "canHold": ["chips", "smartphones"],
-      "maxProcessLines": 3,
+    "type_id": {
+      "name": "string",
+      "canHold": ["resource_id"],
+      "maxProcessLines": "number",
       "processes": {
-        "production": ["assemble_phone"],
-        "retail": [],
-        "procurement": ["buy_chips"],
-        "fulfillment": ["sell_smartphones_wholesale"]
+        "production": ["process_id"],
+        "retail": ["process_id"],
+        "procurement": ["process_id"],
+        "fulfillment": ["process_id"]
       }
     }
   }
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `string` | Display name |
-| `canHold` | `string[]` | Resource IDs this entity can store |
-| `maxProcessLines` | `number` | Max concurrent production lines |
-| `processes.production` | `string[]` | Production process IDs |
-| `processes.retail` | `string[]` | Retail process IDs |
-| `processes.procurement` | `string[]` | Procurement process IDs |
-| `processes.fulfillment` | `string[]` | Fulfillment process IDs |
-
-## Locations (`locations.json`)
-
-Each location has its own demand configuration:
+### `locations.json`
 
 ```json
 {
-  "locations": [
-    {
-      "id": "market_a",
-      "name": "Market A",
-      "localTransportTicks": 1,
-      "demand": { "smartphones": 8 },
-      "demandCycle": {
-        "phases": [
-          { "name": "Normal", "ticks": 20, "multiplier": 1.0 },
-          { "name": "Peak", "ticks": 5, "multiplier": 2.0 }
-        ],
-        "variance": 0.15
-      }
+  "locations": [{
+    "id": "string",
+    "name": "string",
+    "localTransportTicks": "number",
+    "demand": { "resource_id": "number" },
+    "demandCycle?": {
+      "phases": [{ "name": "string", "ticks": "number", "multiplier": "number" }],
+      "variance": "number (0-1)"
     }
-  ],
-  "corridors": [
-    { "locationA": "mine_region", "locationB": "hot_city", "cost": 2, "type": "land" }
-  ]
+  }],
+  "corridors": [{
+    "locationA": "string",
+    "locationB": "string",
+    "cost": "number (ticks)",
+    "type": "land | maritime | air"
+  }]
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique location ID |
-| `name` | `string` | Display name |
-| `localTransportTicks` | `number` | Ticks for local transport (added at origin + destination) |
-| `demand` | `Record<string, number>` | Per-resource base demand (e.g. `{ "smartphones": 8 }`) |
-| `demandCycle` | `DemandCycleConfig?` | Optional demand cycle (required if demand > 0) |
+Corridors are bi-directional. Multi-hop routing uses Dijkstra's algorithm. Local transport ticks are added at origin and destination but excluded from pathfinding.
 
-Corridors are bi-directional. `cost` is the corridor traversal time in ticks (local transport is added separately at origin and destination only).
+### `scenario.json`
 
-## Transport System
-
-### Corridors
-
-Transport links are bi-directional corridors with a cost in ticks and a type (`land`, `maritime`, `air`). Type has no gameplay effect currently.
-
-### Multi-Hop Routing
-
-Dijkstra's algorithm computes shortest paths between all location pairs. A path table is pre-computed and cached at startup.
-
-**Total transport time** = `localTransport(origin)` + `corridorPathCost` + `localTransport(destination)`
-
-Local transport is only counted at the two endpoints, not at intermediate hops.
-
-### Delivery Tracking
-
-Each `Delivery` object tracks its route as a list of location IDs from origin to destination:
-
-```typescript
-interface Delivery {
-  route: string[];       // e.g. ["tech_city", "hot_city", "market_a"]
-  ticksRemaining: number;
+```json
+{
+  "name": "string",
+  "description": "string",
+  "entities": [{
+    "id": "string",
+    "type": "entity_type_id",
+    "name": "string",
+    "locationId": "location_id",
+    "inventory": { "resource_id": "number" },
+    "suppliers?": { "resource_id": ["supplier_entity_id"] },
+    "money?": "number (starting balance)"
+  }],
+  "defaultPlayerEntity": "entity_id"
 }
 ```
 
-## Order System
-
-### Order Lifecycle
-
-1. **Placed** (`pending`): Buyer creates order via procurement AI or player action
-2. **Accepted/Declined**: Seller evaluates pending orders using fulfillment AI priority; accepted orders commit stock
-3. **In Transit** (`in_transit`): Accepted orders ship during departures phase
-4. **Delivered**: Delivery arrives, stock added to buyer
-
-### Committed Stock
-
-When a seller accepts an order, the fulfilled quantity is marked as "committed" in the seller's inventory. This prevents the same units from being promised to multiple buyers. Committed stock is deducted from available stock calculations.
-
-`available = inventory - committed`
-
-## Production System
-
-Production uses continuous process lines:
-
-1. **Startup**: Line enters `'starting'` phase, consumes `startupInputs` (fixed, NOT volume-scaled), counts down `startupTicks`
-2. **Running**: Each tick:
-   - At cycle start (`progress === 0`): consume `cycleInputs` (scaled by volume)
-   - Every tick: consume `tickInputs` (scaled by volume)
-   - Advance progress by 1
-   - On cycle completion (`progress >= cycleTicks`): produce `outputs` (scaled by volume), reset progress
-3. **Starvation**: If inputs unavailable, line stalls (no progress) but stays active
-4. **Stopping**: Player or AI can stop a line at any time (removes it)
-
-## Demand System
-
-Demand is **per-resource, per-location** with **per-location demand cycles**.
-
-Each location with demand has its own independent cycle of phases (e.g., Normal, Growth, Peak, Decline). Phases advance independently — Market A can be in Peak while Market B is in Normal.
-
-Actual demand per tick = `baseDemand * phaseMultiplier * (1 + random * variance)`
-
-## Tick Speed
-
-Five speed levels configurable in `settings.json`:
-
-| Level | Default ms | Description |
-|-------|-----------|-------------|
-| 1 | 2000 | Slowest |
-| 2 | 1000 | Default |
-| 3 | 500 | Fast |
-| 4 | 200 | Faster |
-| 5 | 0 | As fast as possible (~16ms) |
-
-The sticky top bar provides speed selection buttons.
-
-## AI Modules
-
-AI logic is split into modular, tweakable functions in `src/engine/ai/`:
-
-### `productionAI.ts`
-
-Decides which production lines to start/stop.
-
-- **Tweakable parameter**: `MINE_MAX_STOCK` — stock threshold above which source entities pause production
-- **Source processes** (no inputs): Start if no line running, stop if overstocked
-- **Normal processes**: Start if no line running and inputs available
-
-### `procurementAI.ts`
-
-Decides what resources to order and from whom.
-
-- **Tweakable parameters**: `AI_REORDER_THRESHOLD` (reorder below this), `AI_ORDER_QUANTITY` (order size)
-- **Supplier selection**: Prefer suppliers with available stock, sorted by distance then stock
-
-### `fulfillmentAI.ts`
-
-Provides order acceptance priority logic.
-
-- **`sortOrdersByPriority`**: Sorts pending orders by (1) shortest delivery time, (2) earliest placement
-- **`decideOrderFulfillment`**: Determines quantity to fulfill (currently: as much as available)
-
-## Settings (`settings.json`)
+### `settings.json`
 
 ```json
 {
   "tickSpeeds": { "1": 2000, "2": 1000, "3": 500, "4": 200, "5": 0 },
-  "defaultSpeed": 2
+  "defaultSpeed": 2,
+  "contractWaitTicks": 3,
+  "contractDefaultPenaltyRate": 0.5,
+  "contractDefaultCancellationThreshold": 0.25
 }
 ```
 
-## Scenario (`scenario.json`)
+- `tickSpeeds`: ms per tick for each speed level (0 = as fast as possible)
+- `contractWaitTicks`: Ticks a proposal must wait before seller evaluates
+- `contractDefaultPenaltyRate`: Fraction of pricePerUnit charged as penalty per missed unit
+- `contractDefaultCancellationThreshold`: Fraction of totalUnits missed that triggers cancellation
 
-Defines the starting game state:
+### `pricing.json`
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `string` | Scenario name |
-| `description` | `string` | Description |
-| `entities` | `ScenarioEntity[]` | Starting entities |
-| `defaultPlayerEntity` | `string` | Entity ID the player controls by default |
+```json
+{
+  "basePrices": { "resource_id": "number" },
+  "retailPrices": { "resource_id": "number" },
+  "storageCostPerUnit": "number (per unit per tick)"
+}
+```
 
-Each entity:
+- `basePrices`: Default wholesale prices used for spot orders and contract proposals
+- `retailPrices`: What consumers pay (retail revenue per unit sold)
+- `storageCostPerUnit`: Per-tick cost for each unit in any entity's inventory
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique entity ID |
-| `type` | `string` | References entity type in `entity-types.json` |
-| `name` | `string` | Display name |
-| `locationId` | `string` | Starting location |
-| `inventory` | `Record<string, number>` | Starting inventory |
-| `suppliers` | `Record<string, string[]>` | Resource ID -> list of supplier entity IDs |
+## Money System
 
-## Runtime State (`GameState`)
+Each entity has a `money` balance:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `tick` | `number` | Current tick number |
-| `entities` | `Entity[]` | All entities with inventory, committed stock |
-| `processLines` | `ProcessLine[]` | Active production lines |
-| `orders` | `Order[]` | All orders (including history) |
-| `deliveries` | `Delivery[]` | Active deliveries in transit |
-| `demandPhases` | `Record<string, DemandPhaseState>` | Per-location demand phase state |
-| `sales` | `Record<string, Record<string, ResourceSalesStats>>` | Per-entity, per-resource sales stats |
+- **Delivery arrival**: Buyer pays `quantity * pricePerUnit` to seller
+- **Retail sales**: Retailer earns `quantity * retailPrice` from consumers
+- **Storage costs**: All entities pay `totalInventoryUnits * storageCostPerUnit` per tick
+- **Contract penalties**: Seller pays `missedUnits * penaltyPerUnit` when failing to deliver
+- Negative balances are allowed but logged as warnings
+
+## Contract System
+
+Contracts define scheduled deliveries between entities:
+
+### Contract fields
+- `buyerEntityId`, `sellerEntityId`, `resource`
+- `pricePerUnit`: Agreed price
+- `unitsPerDelivery`: Quantity per scheduled delivery
+- `deliveryInterval`: Ticks between deliveries
+- `totalUnits`: Total quantity over contract lifetime
+- `unitsShipped`, `unitsMissed`: Tracking counters
+- `penaltyPerUnit`: Money penalty for missed units
+- `cancellationThreshold`: Fraction of totalUnits missed that cancels the contract
+- `status`: `proposed` | `active` | `completed` | `cancelled`
+
+### Contract lifecycle
+1. **Proposal**: Buyer proposes (AI or player)
+2. **Waiting**: Proposal sits for `contractWaitTicks` before evaluation
+3. **Evaluation**: Seller accepts (most profitable, above production cost) or declines
+4. **Active**: Deliveries created on schedule; seller must have stock or gets penalized
+5. **Completion/Cancellation**: All units processed, or too many missed
+
+### Order book
+The `getOrderBook()` function computes a 25-tick forward view of expected deliveries from active contracts, useful for production planning.
+
+## Pricing Logic
+
+- Sellers decline orders where `pricePerUnit < production cost per unit`
+- Order acceptance priority: (1) highest price, (2) shortest delivery time, (3) earliest placed
+- Production cost = sum of (input quantities * base prices) / total output quantity
+- Contracts wait before acceptance so sellers can receive competing offers
+
+## Player Actions
+
+The player can queue **multiple actions per tick**:
+
+| Action | Description |
+|--------|-------------|
+| `start_line` | Start a new production line (with initial volume) |
+| `stop_line` | Stop an existing production line |
+| `set_volume` | Adjust volume on a running production line (clamped to min/max) |
+| `order` | Place a spot order for resources from a supplier |
+| `propose_contract` | Propose a supply contract to a seller |
+
+All actions are queued and executed together when the next tick runs. Actions can be removed from the queue before execution.
+
+## AI Modules
+
+### `productionAI.ts`
+- **Source processes** (no inputs): Start if no line running, stop if stock > `MINE_MAX_STOCK`
+- **Normal processes**: Start if inputs available and line slots open
+
+### `procurementAI.ts`
+- With active contract: emergency spot orders only if stock < `AI_EMERGENCY_THRESHOLD`
+- Without contract: order if stock < `AI_REORDER_THRESHOLD`
+- Picks closest supplier with available stock
+
+### `fulfillmentAI.ts`
+- Sorts orders by price (highest first), then delivery time, then placement time
+- Declines orders below production cost
+- Fulfills up to available stock
+
+### `contractAI.ts`
+- **Buyer side**: Proposes contracts when stock is low and no active contract exists
+- **Seller side**: Accepts most profitable proposal per resource (above cost floor), declines rest
+- **Order book**: Forward-looking schedule of expected deliveries
 
 ## UI Components
 
 ### `TopBar.tsx`
-
-Sticky bar at the top of the screen. Contains:
-- Tick counter
-- Speed selector (1-5 buttons)
-- Play / Pause / Step / Reset buttons
-- Change role button
+Sticky header showing: tick counter, player money, 5-speed selector, play/pause/step/reset, change role.
 
 ### `DebugPanel.tsx`
+Main game view with entity cards showing:
+- Entity name, type, money balance
+- Inventory with committed stock
+- Production lines with volume adjustment controls (+/- buttons)
+- Active deliveries with route and price info
+- Player controls: start/stop lines, spot orders, contract proposals
+- Multi-action queue with remove buttons
+- Contracts section (expandable)
+- Order history (expandable) with price and contract indicators
+- Per-resource sales stats for retailers
 
-Main game panel. Shows entities grouped by location, each with:
-- Inventory (with committed stock indicators)
-- Production lines (with phase, progress, volume, stop button)
-- Deliveries (incoming/outgoing with route)
-- Player controls (start line, order resources with supplier selection)
-- Sales stats (per-resource for retailers)
-- Order history (expandable)
+## Scripts
 
-Per-location: demand info and current demand phase.
-
-### `RoleSelect.tsx`
-
-Entity selection screen. Groups entities by type. Player picks which entity to control.
+- `npm run validate` — Validates all config files including pricing and contract settings
+- `npm run dev` — Start development server
 
 ## Key Engine Files
 
 ### `configLoader.ts`
-
-- **`loadGameConfig()`**: Loads all JSON configs, validates, returns `GameConfig`
-- **`validateConfig()`**: Cross-references all IDs, validates process fields, demand cycles
-- **`validateCorridorConnectivity()`**: BFS to ensure all locations are connected
-- **`findShortestPath()`**: Dijkstra's algorithm for corridor graph
-- **`buildPathTable()`**: Pre-computes all-pairs shortest paths (cached)
-- **`getTransportTime(from, to)`**: Returns total transport time (local + corridor path)
-- **`getTransportRoute(from, to)`**: Returns total time and route as location ID list
-- **`getProductionProcess(config, id)`**: Lookup production process by ID
-- **`getRetailProcess(config, id)`**: Lookup retail process by ID
-- **`getProcurementProcess(config, id)`**: Lookup procurement process by ID
-- **`getFulfillmentProcess(config, id)`**: Lookup fulfillment process by ID
-- **`getEntityType(config, entity)`**: Lookup entity type config
-- **`getLocation(config, locationId)`**: Lookup location config
-- **`getGameConfig()`**: Singleton accessor (loads once, caches)
+- `loadGameConfig()`: Loads and validates all JSON config
+- `getTransportTime()` / `getTransportRoute()`: Pathfinding with local transport
+- `getProductionCostPerUnit()`: Calculates production cost from input prices
+- `getBasePrice()` / `getRetailPrice()`: Price lookups
+- Accessor functions for all config types
 
 ### `tickProcessor.ts`
-
-- **`runOneTick(state, playerAction?)`**: Executes one full tick (8 phases)
-- **`processArrivals()`**: Phase 2 — complete deliveries
-- **`advanceDemandPhases()`**: Phase 3 — per-location demand advancement
-- **`processProductionLines()`**: Phase 4 — production line progression
-- **`processRetailSelling()`**: Phase 5 — retail sales using retail process config
-- **`processAIDecisions()`**: Phase 6b — delegates to AI modules
-- **`processPlayerOrder()`**: Phase 6a — handles player actions
-- **`processOrderAcceptance()`**: Phase 7 — accept/decline using fulfillment AI
-- **`processDepartures()`**: Phase 8 — ship accepted orders
-- **`getSuppliersForResource()`**: Returns supplier details for UI
-- **`getLocationPhaseName()`**: Returns demand phase name for a location
-- **`getLocationPhaseProgress()`**: Returns demand phase progress for a location
+- `runOneTick(state, playerActions[])`: Executes all 11 tick phases
+- `processArrivals()`: Deliveries + payment transfer
+- `processRetailSelling()`: Consumer sales + revenue
+- `processStorageCosts()`: Inventory holding costs
+- `processContractManagement()`: Proposals, evaluation, due deliveries
+- `processOrderAcceptance()`: Price-based order sorting and acceptance
+- `getContractsForEntity()`: Query contracts for an entity
 
 ### `createInitialState.ts`
-
-- **`createInitialState(playerEntityId?)`**: Creates `GameState` from config
-- **`getSelectableEntities()`**: Returns entities for role selection
-- **`getEntityTypeName(typeId)`**: Display name lookup
-- **`getLocationName(locationId)`**: Display name lookup
-
-### `useTickEngine.ts`
-
-React hook managing the game loop:
-- **`gameState`**: Current game state
-- **`isPaused` / `setPaused`**: Pause control
-- **`speed` / `setSpeed`**: Speed level (1-5)
-- **`step()`**: Advance one tick manually
-- **`reset()`**: Reset to initial state
-- **`submitOrder(order)`**: Queue a player action
-- **`pendingOrder`**: Currently queued player action
-
-## Scripts
-
-- **`npm run dev`** — Start dev server
-- **`npm run build`** — TypeScript check + production build
-- **`npm run validate`** — Run `scripts/validateConfig.ts` to validate all config files
+- Initializes entities with money from scenario config
+- Initializes empty contracts array
+- Sets up demand phases and sales stats

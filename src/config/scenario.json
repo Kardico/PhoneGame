@@ -8,7 +8,8 @@
       "name": "Northern Mine",
       "locationId": "mine_region",
       "inventory": { "raw_materials": 20 },
-      "suppliers": {}
+      "suppliers": {},
+      "money": 500
     },
     {
       "id": "chip-1",
@@ -18,7 +19,8 @@
       "inventory": { "raw_materials": 5, "chips": 10 },
       "suppliers": {
         "raw_materials": ["mine-1"]
-      }
+      },
+      "money": 1000
     },
     {
       "id": "chip-2",
@@ -28,7 +30,8 @@
       "inventory": { "raw_materials": 5, "chips": 10 },
       "suppliers": {
         "raw_materials": ["mine-1"]
-      }
+      },
+      "money": 1000
     },
     {
       "id": "asm-1",
@@ -38,7 +41,8 @@
       "inventory": { "chips": 5, "smartphones": 8 },
       "suppliers": {
         "chips": ["chip-1", "chip-2"]
-      }
+      },
+      "money": 2000
     },
     {
       "id": "ret-1",
@@ -48,7 +52,8 @@
       "inventory": { "smartphones": 5 },
       "suppliers": {
         "smartphones": ["asm-1"]
-      }
+      },
+      "money": 3000
     },
     {
       "id": "ret-2",
@@ -58,7 +63,8 @@
       "inventory": { "smartphones": 5 },
       "suppliers": {
         "smartphones": ["asm-1"]
-      }
+      },
+      "money": 3000
     }
   ],
   "defaultPlayerEntity": "asm-1"

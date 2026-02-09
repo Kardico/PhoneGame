@@ -50,7 +50,6 @@ export interface ProductionProcess {
 export interface RetailProcess {
   id: string;
   name: string;
-  /** Which resource this retail process sells */
   resource: string;
 }
 
@@ -58,7 +57,6 @@ export interface RetailProcess {
 export interface ProcurementProcess {
   id: string;
   name: string;
-  /** Which resource this procurement process acquires */
   resource: string;
 }
 
@@ -66,7 +64,6 @@ export interface ProcurementProcess {
 export interface FulfillmentProcess {
   id: string;
   name: string;
-  /** Which resource this fulfillment process ships */
   resource: string;
 }
 
@@ -94,9 +91,7 @@ export interface EntityTypeProcesses {
 export interface EntityTypeConfig {
   name: string;
   canHold: string[];
-  /** Maximum number of process lines that can run simultaneously */
   maxProcessLines: number;
-  /** Process IDs this entity type can use, by category */
   processes: EntityTypeProcesses;
 }
 
@@ -104,76 +99,82 @@ export interface EntityTypeConfig {
 // Locations (from locations.json)
 // --------------------------------------------------------------------------
 
-/** Demand phase in a location's cycle */
 export interface DemandPhase {
   name: string;
   ticks: number;
   multiplier: number;
 }
 
-/** Demand cycle configuration (per-location) */
 export interface DemandCycleConfig {
   phases: DemandPhase[];
   variance: number;
 }
 
-/** Location definition from locations.json */
 export interface LocationConfig {
   id: string;
   name: string;
   localTransportTicks: number;
-  /** Per-resource base demand at this location (e.g. { "smartphones": 8 }) */
   demand: Record<string, number>;
-  /** Optional demand cycle for this location (only needed if demand > 0) */
   demandCycle?: DemandCycleConfig;
 }
 
-/** Corridor type for transport links */
 export type CorridorType = 'land' | 'maritime' | 'air';
 
-/** Bi-directional corridor between two locations */
 export interface CorridorConfig {
   locationA: string;
   locationB: string;
-  /** Cost in ticks to traverse this corridor (excluding local transport) */
   cost: number;
   type: CorridorType;
 }
 
-/** Full locations config file structure */
 export interface LocationsConfig {
   locations: LocationConfig[];
   corridors: CorridorConfig[];
 }
 
 // --------------------------------------------------------------------------
+// Pricing (from pricing.json)
+// --------------------------------------------------------------------------
+
+export interface PricingConfig {
+  /** Base wholesale prices per resource */
+  basePrices: Record<string, number>;
+  /** Retail prices per resource (what consumers pay) */
+  retailPrices: Record<string, number>;
+  /** Storage cost per unit per tick */
+  storageCostPerUnit: number;
+}
+
+// --------------------------------------------------------------------------
 // Settings (from settings.json)
 // --------------------------------------------------------------------------
 
-/** Game settings */
 export interface SettingsConfig {
-  /** Map of speed level (1-5) to milliseconds per tick (0 = as fast as possible) */
   tickSpeeds: Record<string, number>;
-  /** Default speed level on game start */
   defaultSpeed: number;
+  /** Ticks a contract proposal must wait before seller can evaluate */
+  contractWaitTicks: number;
+  /** Default penalty rate: fraction of pricePerUnit charged per missed unit */
+  contractDefaultPenaltyRate: number;
+  /** Default cancellation threshold: fraction of totalUnits missed that cancels contract */
+  contractDefaultCancellationThreshold: number;
 }
 
 // --------------------------------------------------------------------------
 // Scenario (from scenario.json)
 // --------------------------------------------------------------------------
 
-/** Entity definition in scenario */
 export interface ScenarioEntity {
   id: string;
   type: string;
   name: string;
   locationId: string;
   inventory: Record<string, number>;
-  /** Map of resource ID -> list of potential supplier entity IDs */
   suppliers?: Record<string, string[]>;
+  /** Starting money balance */
+  money?: number;
 }
 
-/** Scenario configuration from scenario.json */
 export interface ScenarioConfig {
   name: string;
   description: string;
@@ -185,139 +186,186 @@ export interface ScenarioConfig {
 // Full game config
 // --------------------------------------------------------------------------
 
-/** Full game configuration (all config files combined) */
 export interface GameConfig {
   resources: ResourceConfig[];
-  /** All process definitions by category */
   processes: ProcessesConfig;
   entityTypes: Record<string, EntityTypeConfig>;
   locations: LocationConfig[];
   corridors: CorridorConfig[];
   scenario: ScenarioConfig;
-  /** Tick speed settings */
+  pricing: PricingConfig;
   tickSpeeds: Record<string, number>;
   defaultSpeed: number;
+  contractWaitTicks: number;
+  contractDefaultPenaltyRate: number;
+  contractDefaultCancellationThreshold: number;
 }
 
 // ============================================================================
 // RUNTIME TYPES (game state)
 // ============================================================================
 
-/** Inventory is a map of resource ID to quantity */
 export type Inventory = Record<string, number>;
 
-/** Runtime entity in the game */
 export interface Entity {
   id: string;
   type: string;
   name: string;
   locationId: string;
   inventory: Inventory;
-  /** Stock reserved for accepted-but-not-yet-shipped orders */
   committed: Inventory;
   isPlayerControlled: boolean;
-  /** Map of resource ID -> list of potential supplier entity IDs */
   suppliers: Record<string, string[]>;
+  /** Current money balance (can go negative) */
+  money: number;
 }
 
-/** Phase of a running process line */
 export type ProcessLinePhase = 'starting' | 'running';
 
-/** A running instance of a production process (continuous production line) */
 export interface ProcessLine {
   id: string;
-  /** Production process ID (references processes.production) */
   processId: string;
   entityId: string;
-  /** Current phase: starting up or actively running */
   phase: ProcessLinePhase;
-  /** Ticks remaining in startup (only relevant when phase === 'starting') */
   startupTicksRemaining: number;
-  /** Progress towards cycle completion: 0 to cycleTicks */
   progress: number;
-  /** Current volume (between minVolume and maxVolume) */
   volume: number;
 }
 
-/** Order status */
 export type OrderStatus = 'pending' | 'accepted' | 'in_transit' | 'delivered' | 'declined';
 
-/** An order placed by a buyer to a seller */
 export interface Order {
   id: string;
-  /** Tick when order was placed */
   placedAtTick: number;
-  /** Tick when order was delivered (if delivered) */
   deliveredAtTick?: number;
-  /** Entity placing the order (buyer) */
   buyerEntityId: string;
-  /** Entity receiving the order (seller) */
   sellerEntityId: string;
   resource: string;
-  /** What the buyer requested */
   requestedQuantity: number;
-  /** What the seller actually committed to ship (may be less if stock was low) */
   fulfilledQuantity: number;
-  /** Whether the order was amended (fulfilled < requested) */
   wasAmended: boolean;
   status: OrderStatus;
+  /** Price per unit for this order */
+  pricePerUnit: number;
+  /** If this order is from a contract, reference its ID */
+  contractId?: string;
 }
 
-/** A delivery in transit (shipment from seller to buyer) */
 export interface Delivery {
   id: string;
-  /** Reference to the order this fulfills */
   orderId: string;
   fromEntityId: string;
   toEntityId: string;
   resource: string;
   quantity: number;
   ticksRemaining: number;
-  /** Route as list of location IDs from origin to destination (includes both endpoints) */
   route: string[];
+  /** Price per unit (for payment on delivery) */
+  pricePerUnit: number;
 }
 
-/** Player's action for the next tick */
+// --------------------------------------------------------------------------
+// Contracts
+// --------------------------------------------------------------------------
+
+export type ContractStatus = 'proposed' | 'active' | 'completed' | 'cancelled';
+
+export interface Contract {
+  id: string;
+  buyerEntityId: string;
+  sellerEntityId: string;
+  resource: string;
+  /** Price per unit agreed upon */
+  pricePerUnit: number;
+  /** Units to deliver each scheduled delivery */
+  unitsPerDelivery: number;
+  /** Ticks between deliveries */
+  deliveryInterval: number;
+  /** Total units over the contract lifetime */
+  totalUnits: number;
+  /** Units successfully shipped so far */
+  unitsShipped: number;
+  /** Units missed (could not deliver on schedule) */
+  unitsMissed: number;
+  /** Money penalty per missed unit */
+  penaltyPerUnit: number;
+  /** Contract cancelled if unitsMissed / totalUnits exceeds this */
+  cancellationThreshold: number;
+  /** Tick when proposed */
+  proposedAtTick: number;
+  /** Tick when accepted (undefined if still proposed) */
+  acceptedAtTick?: number;
+  /** Next tick when a delivery is due (for active contracts) */
+  nextDeliveryTick: number;
+  status: ContractStatus;
+}
+
+// --------------------------------------------------------------------------
+// Player orders
+// --------------------------------------------------------------------------
+
+/** Details for proposing a contract */
+export interface ContractProposal {
+  supplierId: string;
+  resource: string;
+  unitsPerDelivery: number;
+  deliveryInterval: number;
+  totalUnits: number;
+  pricePerUnit: number;
+}
+
 export interface PlayerOrder {
   entityId: string;
-  /** start_line: start a new process line. stop_line: stop an existing line. order: order resources. */
-  action: 'start_line' | 'stop_line' | 'order';
-  /** Process ID (for start_line) or resource ID (for order) */
+  action: 'start_line' | 'stop_line' | 'order' | 'set_volume' | 'propose_contract' | 'accept_contract' | 'decline_contract';
+  /** Process ID (for start_line), resource ID (for order), or contract ID (for accept/decline_contract) */
   targetId: string;
-  /** For order: quantity. For start_line: initial volume. */
+  /** For order: quantity. For start_line: initial volume. For set_volume: new volume. */
   quantity: number;
-  /** For orders: which supplier to order from (if not specified, picks best available) */
   supplierId?: string;
-  /** For stop_line: which specific process line to stop */
   lineId?: string;
+  contractProposal?: ContractProposal;
 }
 
-/** Tracks current position in a location's demand cycle */
+// --------------------------------------------------------------------------
+// Demand & stats
+// --------------------------------------------------------------------------
+
 export interface DemandPhaseState {
   phaseIndex: number;
   ticksInPhase: number;
 }
 
-/** Statistics for tracking sales (per resource) */
 export interface ResourceSalesStats {
   totalSold: number;
   totalDemand: number;
   lostSales: number;
 }
 
-/** Full game state */
+// --------------------------------------------------------------------------
+// Order book entry (computed, not stored)
+// --------------------------------------------------------------------------
+
+export interface OrderBookEntry {
+  tick: number;
+  contractId: string;
+  resource: string;
+  quantity: number;
+  counterpartyId: string;
+  direction: 'incoming' | 'outgoing';
+}
+
+// --------------------------------------------------------------------------
+// Full game state
+// --------------------------------------------------------------------------
+
 export interface GameState {
   tick: number;
   entities: Entity[];
-  /** Active process lines (continuous production) */
   processLines: ProcessLine[];
-  /** All orders (including history) */
   orders: Order[];
-  /** Active deliveries in transit */
   deliveries: Delivery[];
-  /** Per-location demand phase state: locationId -> DemandPhaseState */
+  contracts: Contract[];
   demandPhases: Record<string, DemandPhaseState>;
-  /** Sales stats: entityId -> resourceId -> ResourceSalesStats */
   sales: Record<string, Record<string, ResourceSalesStats>>;
 }
 
@@ -325,7 +373,6 @@ export interface GameState {
 // HELPER TYPES
 // ============================================================================
 
-/** Result of finding suppliers */
 export interface SupplierOption {
   entityId: string;
   entityName: string;
@@ -333,10 +380,7 @@ export interface SupplierOption {
   transportTicks: number;
 }
 
-/** Result of shortest-path computation */
 export interface PathResult {
-  /** Total corridor cost (does NOT include local transport at endpoints) */
   cost: number;
-  /** List of location IDs from origin to destination (inclusive) */
   path: string[];
 }

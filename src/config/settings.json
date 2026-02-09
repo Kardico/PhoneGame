@@ -6,5 +6,8 @@
     "4": 200,
     "5": 0
   },
-  "defaultSpeed": 2
+  "defaultSpeed": 2,
+  "contractWaitTicks": 3,
+  "contractDefaultPenaltyRate": 0.5,
+  "contractDefaultCancellationThreshold": 0.25
 }

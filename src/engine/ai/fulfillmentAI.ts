@@ -1,9 +1,8 @@
 /**
  * Fulfillment AI — handles order acceptance logic for sellers.
  *
- * Currently, fulfillment decisions are made centrally in the tick processor's
- * processOrderAcceptance phase. This module provides the priority/acceptance
- * logic that the central function calls per-entity.
+ * Now includes price-based priority: higher price offers are accepted first.
+ * Sellers decline orders below their production cost.
  *
  * Tweakable parameters are at the top of this file.
  */
@@ -14,14 +13,13 @@ import type {
   GameConfig,
   GameState,
 } from '../../types/game';
-import { getTransportTime } from '../configLoader';
+import { getTransportTime, getProductionCostPerUnit } from '../configLoader';
 
 // ============================================================================
 // TWEAKABLE PARAMETERS
 // ============================================================================
 
-// Currently using simple rules:
-// Priority: (1) shortest delivery time, (2) earliest placement
+// Priority: (1) highest price, (2) shortest delivery time, (3) earliest placement
 
 // ============================================================================
 // ORDER PRIORITY
@@ -30,7 +28,7 @@ import { getTransportTime } from '../configLoader';
 /**
  * Sort pending orders for a seller by priority.
  * Returns sorted order indices (highest priority first).
- * This function can be extended with price-based priority later.
+ * Priority: (1) price offered (higher first), (2) shortest delivery time, (3) earliest placement.
  */
 export function sortOrdersByPriority(
   seller: Entity,
@@ -43,15 +41,18 @@ export function sortOrdersByPriority(
     const a = orders[aIdx];
     const b = orders[bIdx];
 
+    // (1) Highest price first
+    if (a.pricePerUnit !== b.pricePerUnit) return b.pricePerUnit - a.pricePerUnit;
+
     const buyerA = state.entities.find((e) => e.id === a.buyerEntityId);
     const buyerB = state.entities.find((e) => e.id === b.buyerEntityId);
 
     const timeA = buyerA ? getTransportTime(config, seller.locationId, buyerA.locationId) : Infinity;
     const timeB = buyerB ? getTransportTime(config, seller.locationId, buyerB.locationId) : Infinity;
 
-    // (1) Shortest delivery time first
+    // (2) Shortest delivery time first
     if (timeA !== timeB) return timeA - timeB;
-    // (2) Earliest placement first
+    // (3) Earliest placement first
     return a.placedAtTick - b.placedAtTick;
   });
 }
@@ -59,14 +60,34 @@ export function sortOrdersByPriority(
 /**
  * Decide whether to accept an order, and how much to fulfill.
  * Returns the quantity to fulfill (0 = decline).
- * Currently accepts as much as available stock allows.
+ * Declines orders priced below the seller's production cost for that resource.
  */
 export function decideOrderFulfillment(
-  _seller: Entity,
-  _order: Order,
+  seller: Entity,
+  order: Order,
   availableStock: number,
   requestedQuantity: number,
+  config: GameConfig,
 ): number {
   if (availableStock <= 0) return 0;
+
+  // Check if price is above production cost
+  const sellerType = config.entityTypes[seller.type];
+  if (sellerType) {
+    let minCost = 0;
+    for (const processId of sellerType.processes.production) {
+      const process = config.processes.production.find((p) => p.id === processId);
+      if (!process) continue;
+      const producesResource = process.outputs.some((o) => o.resource === order.resource);
+      if (producesResource) {
+        const cost = getProductionCostPerUnit(config, processId);
+        minCost = cost;
+        break;
+      }
+    }
+    // Decline if offered price is below production cost (but always accept free resources like from mines)
+    if (order.pricePerUnit < minCost) return 0;
+  }
+
   return Math.min(requestedQuantity, availableStock);
 }

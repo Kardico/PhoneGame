@@ -10,39 +10,39 @@ export interface UseTickEngineResult {
   gameState: GameState;
   isPaused: boolean;
   setPaused: (paused: boolean) => void;
-  /** Current speed level (1-5) */
   speed: number;
-  /** Set speed level (1-5) */
   setSpeed: (speed: number) => void;
   step: () => void;
   reset: () => void;
-  /** Submit a player order for the next tick */
+  /** Submit a player order (appends to the queue for the next tick) */
   submitOrder: (order: PlayerOrder) => void;
-  /** Pending player order (if any) */
-  pendingOrder: PlayerOrder | null;
-  /** Clear the pending order */
-  clearOrder: () => void;
+  /** All pending player orders for the next tick */
+  pendingOrders: PlayerOrder[];
+  /** Clear all pending orders */
+  clearOrders: () => void;
+  /** Remove a specific pending order by index */
+  removePendingOrder: (index: number) => void;
 }
 
 /**
  * Core tick-based simulation hook.
- * When not paused, advances game state at the selected speed.
+ * Supports multiple player actions per tick via an order queue.
  */
 export function useTickEngine(playerEntityId: string | null): UseTickEngineResult {
   const config = getGameConfig();
 
   const [gameState, setGameState] = useState<GameState>(() =>
-    createInitialState(playerEntityId)
+    createInitialState(playerEntityId),
   );
   const [isPaused, setPaused] = useState(true);
   const [speed, setSpeedState] = useState(config.defaultSpeed);
-  const [pendingOrder, setPendingOrder] = useState<PlayerOrder | null>(null);
-  const pendingOrderRef = useRef<PlayerOrder | null>(null);
+  const [pendingOrders, setPendingOrders] = useState<PlayerOrder[]>([]);
+  const pendingOrdersRef = useRef<PlayerOrder[]>([]);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const speedRef = useRef(speed);
 
   // Keep refs in sync
-  pendingOrderRef.current = pendingOrder;
+  pendingOrdersRef.current = pendingOrders;
   speedRef.current = speed;
 
   const setSpeed = useCallback((newSpeed: number) => {
@@ -50,27 +50,33 @@ export function useTickEngine(playerEntityId: string | null): UseTickEngineResul
     setSpeedState(clamped);
   }, []);
 
+  /** Append a player order to the queue */
   const submitOrder = useCallback((order: PlayerOrder) => {
-    setPendingOrder(order);
+    setPendingOrders((prev) => [...prev, order]);
   }, []);
 
-  const clearOrder = useCallback(() => {
-    setPendingOrder(null);
+  /** Clear all pending orders */
+  const clearOrders = useCallback(() => {
+    setPendingOrders([]);
+  }, []);
+
+  /** Remove a specific pending order by index */
+  const removePendingOrder = useCallback((index: number) => {
+    setPendingOrders((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
   const step = useCallback(() => {
-    const order = pendingOrderRef.current;
-    setGameState((prev) => runOneTick(prev, order));
-    setPendingOrder(null);
+    const orders = pendingOrdersRef.current;
+    setGameState((prev) => runOneTick(prev, orders));
+    setPendingOrders([]);
   }, []);
 
   const reset = useCallback(() => {
     setGameState(createInitialState(playerEntityId));
     setPaused(true);
-    setPendingOrder(null);
+    setPendingOrders([]);
   }, [playerEntityId]);
 
-  /** Get the interval in ms for the current speed */
   const getIntervalMs = useCallback(() => {
     const speedStr = String(speedRef.current);
     const ms = config.tickSpeeds[speedStr];
@@ -90,9 +96,9 @@ export function useTickEngine(playerEntityId: string | null): UseTickEngineResul
     const startInterval = () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       intervalRef.current = setInterval(() => {
-        const order = pendingOrderRef.current;
-        setGameState((prev) => runOneTick(prev, order));
-        setPendingOrder(null);
+        const orders = pendingOrdersRef.current;
+        setGameState((prev) => runOneTick(prev, orders));
+        setPendingOrders([]);
       }, getIntervalMs());
     };
 
@@ -115,7 +121,8 @@ export function useTickEngine(playerEntityId: string | null): UseTickEngineResul
     step,
     reset,
     submitOrder,
-    pendingOrder,
-    clearOrder,
+    pendingOrders,
+    clearOrders,
+    removePendingOrder,
   };
 }

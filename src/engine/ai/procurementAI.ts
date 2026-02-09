@@ -1,8 +1,10 @@
 /**
  * Procurement AI — decides what to order and from whom for AI-controlled entities.
  *
+ * With the contract system, AI primarily uses contracts for regular supply.
+ * Spot orders are placed as emergency orders when contracts aren't covering demand.
+ *
  * Tweakable parameters are at the top of this file.
- * Each decision function takes the entity context and returns orders to place.
  */
 
 import type {
@@ -11,16 +13,22 @@ import type {
   GameConfig,
   EntityTypeConfig,
 } from '../../types/game';
-import { getProcurementProcess, getTransportTime } from '../configLoader';
+import { getProcurementProcess, getTransportTime, getBasePrice } from '../configLoader';
 
 // ============================================================================
 // TWEAKABLE PARAMETERS
 // ============================================================================
 
-/** Threshold below which AI orders more resources */
+/** Threshold below which AI places emergency spot orders */
+export const AI_EMERGENCY_THRESHOLD = 5;
+
+/** How much AI orders in emergency spot orders */
+export const AI_EMERGENCY_QUANTITY = 10;
+
+/** General reorder threshold (for entities without contracts) */
 export const AI_REORDER_THRESHOLD = 10;
 
-/** How much AI tries to order at once */
+/** Standard order quantity */
 export const AI_ORDER_QUANTITY = 10;
 
 // ============================================================================
@@ -28,8 +36,7 @@ export const AI_ORDER_QUANTITY = 10;
 // ============================================================================
 
 export interface ProcurementDecision {
-  /** Orders to place: { resource, quantity, supplierId? } */
-  orders: { resource: string; quantity: number; supplierId?: string }[];
+  orders: { resource: string; quantity: number; supplierId?: string; pricePerUnit: number }[];
 }
 
 // ============================================================================
@@ -37,8 +44,8 @@ export interface ProcurementDecision {
 // ============================================================================
 
 /**
- * Decide what to order for an AI entity.
- * Called once per tick for each AI-controlled entity that has procurement processes.
+ * Decide what spot orders to place for an AI entity.
+ * With contracts in play, this focuses on emergency orders when stock is critically low.
  */
 export function decideProcurement(
   entity: Entity,
@@ -74,33 +81,29 @@ function decideOrderForResource(
 
   const currentStock = entity.inventory[resource] ?? 0;
 
-  if (currentStock < shouldReorder(currentStock)) {
-    // Find best supplier
+  // Check if we have an active contract for this resource
+  const hasContract = state.contracts.some(
+    (c) =>
+      c.buyerEntityId === entity.id &&
+      c.resource === resource &&
+      c.status === 'active',
+  );
+
+  // With an active contract: only emergency orders if critically low
+  const threshold = hasContract ? AI_EMERGENCY_THRESHOLD : AI_REORDER_THRESHOLD;
+  const quantity = hasContract ? AI_EMERGENCY_QUANTITY : AI_ORDER_QUANTITY;
+
+  if (currentStock < threshold) {
     const bestSupplierId = pickBestSupplier(entity, resource, supplierIds, state, config);
     if (bestSupplierId) {
       decision.orders.push({
         resource,
-        quantity: howMuchToOrder(currentStock),
+        quantity,
         supplierId: bestSupplierId,
+        pricePerUnit: getBasePrice(config, resource),
       });
     }
   }
-}
-
-// ============================================================================
-// TWEAKABLE: should we reorder? Returns the threshold.
-// ============================================================================
-
-function shouldReorder(_currentStock: number): number {
-  return AI_REORDER_THRESHOLD;
-}
-
-// ============================================================================
-// TWEAKABLE: how much to order
-// ============================================================================
-
-function howMuchToOrder(_currentStock: number): number {
-  return AI_ORDER_QUANTITY;
 }
 
 // ============================================================================
@@ -114,7 +117,6 @@ function pickBestSupplier(
   state: GameState,
   config: GameConfig,
 ): string | null {
-  // Get available stock (inventory - committed) for each supplier
   const candidates = supplierIds
     .map((id) => {
       const supplier = state.entities.find((e) => e.id === id);
@@ -125,7 +127,6 @@ function pickBestSupplier(
     })
     .filter((c): c is NonNullable<typeof c> => c !== null);
 
-  // Prefer suppliers with stock, sorted by distance then available stock
   const withStock = candidates.filter((c) => c.available > 0);
   if (withStock.length > 0) {
     withStock.sort((a, b) => {
@@ -135,7 +136,6 @@ function pickBestSupplier(
     return withStock[0].id;
   }
 
-  // No suppliers with stock — still order from closest (will be declined, but signal demand)
   if (candidates.length > 0) {
     candidates.sort((a, b) => a.distance - b.distance);
     return candidates[0].id;

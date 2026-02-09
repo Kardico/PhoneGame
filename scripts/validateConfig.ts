@@ -110,11 +110,21 @@ interface ScenarioEntity {
   locationId: string;
   inventory: Record<string, number>;
   suppliers?: Record<string, string[]>;
+  money?: number;
 }
 
 interface SettingsConfig {
   tickSpeeds: Record<string, number>;
   defaultSpeed: number;
+  contractWaitTicks: number;
+  contractDefaultPenaltyRate: number;
+  contractDefaultCancellationThreshold: number;
+}
+
+interface PricingConfig {
+  basePrices: Record<string, number>;
+  retailPrices: Record<string, number>;
+  storageCostPerUnit: number;
 }
 
 // ============================================================================
@@ -160,6 +170,7 @@ function main(): void {
   let scenarioEntities: ScenarioEntity[];
   let defaultPlayerEntity: string;
   let settings: SettingsConfig;
+  let pricing: PricingConfig;
 
   try {
     const resourcesJson = readJson('resources.json') as { resources: ResourceConfig[] };
@@ -221,12 +232,19 @@ function main(): void {
     return;
   }
 
+  try {
+    pricing = readJson('pricing.json') as PricingConfig;
+    info(`pricing.json: ${Object.keys(pricing.basePrices).length} base prices, ${Object.keys(pricing.retailPrices).length} retail prices`);
+  } catch (e) {
+    error(`Failed to read pricing.json: ${e}`);
+    return;
+  }
+
   const resourceIds = new Set(resources.map((r) => r.id));
   const locationIds = new Set(locations.map((l) => l.id));
   const entityTypeIds = new Set(Object.keys(entityTypes));
   const scenarioEntityIds = new Set(scenarioEntities.map((e) => e.id));
 
-  // Build process ID sets
   const productionIds = new Set(processes.production.map((p) => p.id));
   const retailIds = new Set(processes.retail.map((p) => p.id));
   const procurementIds = new Set(processes.procurement.map((p) => p.id));
@@ -238,14 +256,12 @@ function main(): void {
     if (!res.id) error('Resource missing id');
     if (!res.name) error(`Resource "${res.id}" missing name`);
   }
-  const dupResources = resources.map(r => r.id).filter((id, i, arr) => arr.indexOf(id) !== i);
+  const dupResources = resources.map((r) => r.id).filter((id, i, arr) => arr.indexOf(id) !== i);
   if (dupResources.length > 0) error(`Duplicate resource IDs: ${dupResources.join(', ')}`);
   info(`${resources.length} resources OK`);
 
   // --- Validate processes ---
   section('Validating processes');
-
-  // Production processes
   for (const proc of processes.production) {
     if (!proc.id) error('Production process missing id');
     if (!proc.name) error(`Production process "${proc.id}" missing name`);
@@ -271,8 +287,6 @@ function main(): void {
       if (output.quantity <= 0) error(`Production process "${proc.id}" output "${output.resource}" must have positive quantity`);
     }
   }
-
-  // Simple processes (retail, procurement, fulfillment)
   for (const proc of processes.retail) {
     if (!proc.id) error('Retail process missing id');
     if (!resourceIds.has(proc.resource)) error(`Retail process "${proc.id}" has unknown resource "${proc.resource}"`);
@@ -285,17 +299,14 @@ function main(): void {
     if (!proc.id) error('Fulfillment process missing id');
     if (!resourceIds.has(proc.resource)) error(`Fulfillment process "${proc.id}" has unknown resource "${proc.resource}"`);
   }
-
-  // Check for duplicate process IDs across all categories
   const allProcessIds = [
-    ...processes.production.map(p => p.id),
-    ...processes.retail.map(p => p.id),
-    ...processes.procurement.map(p => p.id),
-    ...processes.fulfillment.map(p => p.id),
+    ...processes.production.map((p) => p.id),
+    ...processes.retail.map((p) => p.id),
+    ...processes.procurement.map((p) => p.id),
+    ...processes.fulfillment.map((p) => p.id),
   ];
   const dupProcessIds = allProcessIds.filter((id, i, arr) => arr.indexOf(id) !== i);
   if (dupProcessIds.length > 0) error(`Duplicate process IDs: ${dupProcessIds.join(', ')}`);
-
   info(`${allProcessIds.length} processes OK`);
 
   // --- Validate entity types ---
@@ -305,7 +316,6 @@ function main(): void {
       if (!resourceIds.has(res)) error(`Entity type "${typeId}" canHold unknown resource "${res}"`);
     }
     if (et.maxProcessLines < 0) error(`Entity type "${typeId}" maxProcessLines must be non-negative`);
-    // Validate process references
     for (const pid of et.processes.production) {
       if (!productionIds.has(pid)) error(`Entity type "${typeId}" references unknown production process "${pid}"`);
     }
@@ -323,21 +333,17 @@ function main(): void {
 
   // --- Validate locations ---
   section('Validating locations');
-  const dupLocations = locations.map(l => l.id).filter((id, i, arr) => arr.indexOf(id) !== i);
+  const dupLocations = locations.map((l) => l.id).filter((id, i, arr) => arr.indexOf(id) !== i);
   if (dupLocations.length > 0) error(`Duplicate location IDs: ${dupLocations.join(', ')}`);
   for (const loc of locations) {
     if (!loc.id) error('Location missing id');
     if (!loc.name) error(`Location "${loc.id}" missing name`);
     if (loc.localTransportTicks < 0) error(`Location "${loc.id}" localTransportTicks must be non-negative`);
-    // Validate demand resources
     for (const res of Object.keys(loc.demand)) {
       if (!resourceIds.has(res)) error(`Location "${loc.id}" has unknown demand resource "${res}"`);
     }
-    // Validate demand cycle
     const hasDemand = Object.values(loc.demand).some((d) => d > 0);
-    if (hasDemand && !loc.demandCycle) {
-      error(`Location "${loc.id}" has demand but no demandCycle defined`);
-    }
+    if (hasDemand && !loc.demandCycle) error(`Location "${loc.id}" has demand but no demandCycle defined`);
     if (loc.demandCycle) {
       if (loc.demandCycle.phases.length === 0) error(`Location "${loc.id}" demandCycle must have at least one phase`);
       for (const phase of loc.demandCycle.phases) {
@@ -360,7 +366,7 @@ function main(): void {
     if (corridor.locationA === corridor.locationB) error(`Corridor connects "${corridor.locationA}" to itself`);
     if (corridor.cost <= 0) error(`Corridor ${corridor.locationA} <-> ${corridor.locationB} must have positive cost`);
     if (!validCorridorTypes.includes(corridor.type)) {
-      warn(`Corridor ${corridor.locationA} <-> ${corridor.locationB} has unknown type "${corridor.type}" (expected: ${validCorridorTypes.join(', ')})`);
+      warn(`Corridor ${corridor.locationA} <-> ${corridor.locationB} has unknown type "${corridor.type}"`);
     }
   }
   const corridorKeys = new Set<string>();
@@ -394,7 +400,7 @@ function main(): void {
     }
     const unreachable = locations.filter((l) => !visited.has(l.id));
     if (unreachable.length > 0) {
-      error(`Network NOT connected! Unreachable from "${locations[0].id}": ${unreachable.map(l => l.id).join(', ')}`);
+      error(`Network NOT connected! Unreachable from "${locations[0].id}": ${unreachable.map((l) => l.id).join(', ')}`);
     } else {
       info(`All ${locations.length} locations are connected`);
     }
@@ -408,16 +414,13 @@ function main(): void {
     for (const to of locations) {
       if (from.id === to.id) continue;
       const path = dijkstra(corridors, locations, from.id, to.id);
-      if (!path) {
-        error(`No path from "${from.id}" to "${to.id}"`);
-      }
+      if (!path) error(`No path from "${from.id}" to "${to.id}"`);
     }
   }
   info('All location pairs are reachable');
 
-  // Print path table
   section('Shortest path table (corridor cost only, no local transport)');
-  const header = ['From \\ To', ...locations.map(l => l.id)];
+  const header = ['From \\ To', ...locations.map((l) => l.id)];
   console.log(`  ${header.join('\t')}`);
   for (const from of locations) {
     const row = [from.id];
@@ -432,6 +435,38 @@ function main(): void {
     console.log(`  ${row.join('\t')}`);
   }
 
+  // --- Validate pricing ---
+  section('Validating pricing');
+  for (const res of Object.keys(pricing.basePrices)) {
+    if (!resourceIds.has(res)) error(`Pricing basePrices has unknown resource "${res}"`);
+    if (pricing.basePrices[res] < 0) error(`Base price for "${res}" must be non-negative`);
+  }
+  for (const res of Object.keys(pricing.retailPrices)) {
+    if (!resourceIds.has(res)) error(`Pricing retailPrices has unknown resource "${res}"`);
+    if (pricing.retailPrices[res] < 0) error(`Retail price for "${res}" must be non-negative`);
+  }
+  if (pricing.storageCostPerUnit < 0) error('storageCostPerUnit must be non-negative');
+  // Warn if a retail process resource doesn't have a retail price
+  for (const proc of processes.retail) {
+    if (pricing.retailPrices[proc.resource] === undefined) {
+      warn(`Retail process "${proc.id}" resource "${proc.resource}" has no retail price defined`);
+    }
+  }
+  // Warn if a resource used in production doesn't have a base price
+  for (const proc of processes.production) {
+    for (const input of [...proc.cycleInputs, ...proc.tickInputs]) {
+      if (pricing.basePrices[input.resource] === undefined) {
+        warn(`Production input "${input.resource}" (in "${proc.id}") has no base price defined`);
+      }
+    }
+    for (const output of proc.outputs) {
+      if (pricing.basePrices[output.resource] === undefined) {
+        warn(`Production output "${output.resource}" (in "${proc.id}") has no base price defined`);
+      }
+    }
+  }
+  info('Pricing OK');
+
   // --- Validate settings ---
   section('Validating settings');
   for (const [level, ms] of Object.entries(settings.tickSpeeds)) {
@@ -445,11 +480,16 @@ function main(): void {
   if (!settings.tickSpeeds[String(settings.defaultSpeed)]) {
     warn(`Default speed ${settings.defaultSpeed} is not defined in tickSpeeds`);
   }
+  if (settings.contractWaitTicks < 0) error('contractWaitTicks must be non-negative');
+  if (settings.contractDefaultPenaltyRate < 0) error('contractDefaultPenaltyRate must be non-negative');
+  if (settings.contractDefaultCancellationThreshold <= 0 || settings.contractDefaultCancellationThreshold > 1) {
+    error('contractDefaultCancellationThreshold must be between 0 (exclusive) and 1 (inclusive)');
+  }
   info('Settings OK');
 
   // --- Validate scenario entities ---
   section('Validating scenario entities');
-  const dupEntities = scenarioEntities.map(e => e.id).filter((id, i, arr) => arr.indexOf(id) !== i);
+  const dupEntities = scenarioEntities.map((e) => e.id).filter((id, i, arr) => arr.indexOf(id) !== i);
   if (dupEntities.length > 0) error(`Duplicate scenario entity IDs: ${dupEntities.join(', ')}`);
   for (const entity of scenarioEntities) {
     if (!entity.id) error('Scenario entity missing id');
@@ -467,6 +507,9 @@ function main(): void {
           }
         }
       }
+    }
+    if (entity.money !== undefined && entity.money < 0) {
+      warn(`Entity "${entity.id}" starts with negative money: ${entity.money}`);
     }
   }
   if (!scenarioEntityIds.has(defaultPlayerEntity)) {
@@ -495,7 +538,7 @@ function dijkstra(
   corridors: CorridorConfig[],
   locations: LocationConfig[],
   from: string,
-  to: string
+  to: string,
 ): { cost: number; path: string[] } | null {
   if (from === to) return { cost: 0, path: [from] };
 
@@ -545,7 +588,6 @@ function dijkstra(
     path.unshift(node);
     node = prev[node];
   }
-
   return { cost: dist[to], path };
 }
 
