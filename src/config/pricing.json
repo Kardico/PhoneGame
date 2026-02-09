@@ -1,0 +1,11 @@
+{
+  "basePrices": {
+    "raw_materials": 5,
+    "chips": 30,
+    "smartphones": 100
+  },
+  "retailPrices": {
+    "smartphones": 150
+  },
+  "storageCostPerUnit": 0.1
+}
