@@ -11,18 +11,10 @@ function App() {
   }
 
   return (
-    <>
-      <div className="fixed top-2 right-2 z-10">
-        <button
-          type="button"
-          onClick={() => setPlayerEntityId(null)}
-          className="rounded border border-slate-500 bg-slate-800/90 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-700 hover:text-slate-200"
-        >
-          Change role
-        </button>
-      </div>
-      <DebugPanel playerEntityId={playerEntityId} />
-    </>
+    <DebugPanel
+      playerEntityId={playerEntityId}
+      onChangeRole={() => setPlayerEntityId(null)}
+    />
   )
 }
 

@@ -3,50 +3,46 @@
     "mineral_mine": {
       "name": "Mineral Mine",
       "canHold": ["raw_materials"],
-      "maxConcurrentJobs": 1,
-      "processes": [
-        {
-          "id": "extract_minerals",
-          "name": "Extract Minerals",
-          "inputs": [],
-          "outputs": [{ "resource": "raw_materials", "quantity": 2 }],
-          "ticks": 1
-        }
-      ]
+      "maxProcessLines": 1,
+      "processes": {
+        "production": ["extract_minerals"],
+        "retail": [],
+        "procurement": [],
+        "fulfillment": ["sell_raw_materials"]
+      }
     },
     "chip_processor": {
       "name": "Chip Processor",
       "canHold": ["raw_materials", "chips"],
-      "maxConcurrentJobs": 3,
-      "processes": [
-        {
-          "id": "fabricate_chips",
-          "name": "Fabricate Chips",
-          "inputs": [{ "resource": "raw_materials", "quantity": 1 }],
-          "outputs": [{ "resource": "chips", "quantity": 1 }],
-          "ticks": 3
-        }
-      ]
+      "maxProcessLines": 3,
+      "processes": {
+        "production": ["fabricate_chips"],
+        "retail": [],
+        "procurement": ["buy_raw_materials"],
+        "fulfillment": ["sell_chips"]
+      }
     },
     "assembler": {
       "name": "Assembler",
       "canHold": ["chips", "smartphones"],
-      "maxConcurrentJobs": 2,
-      "processes": [
-        {
-          "id": "assemble_phone",
-          "name": "Assemble Phone",
-          "inputs": [{ "resource": "chips", "quantity": 1 }],
-          "outputs": [{ "resource": "smartphones", "quantity": 1 }],
-          "ticks": 4
-        }
-      ]
+      "maxProcessLines": 3,
+      "processes": {
+        "production": ["assemble_phone"],
+        "retail": [],
+        "procurement": ["buy_chips"],
+        "fulfillment": ["sell_smartphones_wholesale"]
+      }
     },
     "retailer": {
       "name": "Retailer",
       "canHold": ["smartphones"],
-      "maxConcurrentJobs": 0,
-      "processes": []
+      "maxProcessLines": 0,
+      "processes": {
+        "production": [],
+        "retail": ["retail_smartphones"],
+        "procurement": ["buy_smartphones"],
+        "fulfillment": []
+      }
     }
   }
 }

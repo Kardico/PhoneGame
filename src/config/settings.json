@@ -1,0 +1,13 @@
+{
+  "tickSpeeds": {
+    "1": 2000,
+    "2": 1000,
+    "3": 500,
+    "4": 200,
+    "5": 0
+  },
+  "defaultSpeed": 2,
+  "contractWaitTicks": 3,
+  "contractDefaultPenaltyRate": 0.5,
+  "contractDefaultCancellationThreshold": 0.25
+}

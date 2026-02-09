@@ -1,6 +1,6 @@
 {
   "name": "Standard Smartphone Supply Chain",
-  "description": "1 mine, 1 chip processor, 1 assembler, 2 competing retailers",
+  "description": "1 mine, 2 chip processors, 1 assembler, 2 competing retailers",
   "entities": [
     {
       "id": "mine-1",
@@ -8,7 +8,8 @@
       "name": "Northern Mine",
       "locationId": "mine_region",
       "inventory": { "raw_materials": 20 },
-      "suppliers": {}
+      "suppliers": {},
+      "money": 500
     },
     {
       "id": "chip-1",
@@ -18,7 +19,19 @@
       "inventory": { "raw_materials": 5, "chips": 10 },
       "suppliers": {
         "raw_materials": ["mine-1"]
-      }
+      },
+      "money": 1000
+    },
+    {
+      "id": "chip-2",
+      "type": "chip_processor",
+      "name": "Hot Chips",
+      "locationId": "hot_city",
+      "inventory": { "raw_materials": 5, "chips": 10 },
+      "suppliers": {
+        "raw_materials": ["mine-1"]
+      },
+      "money": 1000
     },
     {
       "id": "asm-1",
@@ -27,8 +40,9 @@
       "locationId": "tech_city",
       "inventory": { "chips": 5, "smartphones": 8 },
       "suppliers": {
-        "chips": ["chip-1"]
-      }
+        "chips": ["chip-1", "chip-2"]
+      },
+      "money": 2000
     },
     {
       "id": "ret-1",
@@ -38,7 +52,8 @@
       "inventory": { "smartphones": 5 },
       "suppliers": {
         "smartphones": ["asm-1"]
-      }
+      },
+      "money": 3000
     },
     {
       "id": "ret-2",
@@ -48,8 +63,9 @@
       "inventory": { "smartphones": 5 },
       "suppliers": {
         "smartphones": ["asm-1"]
-      }
+      },
+      "money": 3000
     }
   ],
-  "defaultPlayerEntity": "ret-1"
+  "defaultPlayerEntity": "asm-1"
 }
